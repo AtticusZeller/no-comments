@@ -142,6 +142,12 @@ needs_pre_commit = pytest.mark.skipif(
 )
 
 
+@pytest.mark.skipif(not os.environ.get("CI"), reason="only enforced in CI")
+def test_ci_runs_integration_tests():
+    assert PRE_COMMIT is not None, "pre-commit must be on PATH in CI"
+    assert (ROOT / ".git").exists(), "CI must check out the repository with git"
+
+
 @pytest.fixture(scope="session")
 def pre_commit_home(tmp_path_factory):
     return tmp_path_factory.mktemp("pre-commit-home")
