@@ -8,6 +8,7 @@ PYTHON_PREFIXES = (
     "noqa",
     "type:",
     "pyright:",
+    "ty:",
     "mypy:",
     "pragma:",
     "fmt:",
