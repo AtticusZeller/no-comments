@@ -1,6 +1,8 @@
 from collections.abc import Iterable
 
-from no_comments.langs import Comment
+from no_comments.langs import Comment, Kind
+
+CODES = {Kind.COMMENT: "NC001", Kind.DOCSTRING: "NC002"}
 
 HINT = (
     "删除这些注释和 docstring。要表达的内容放进命名、类型或测试里；改动说明写进 commit message。"
@@ -12,7 +14,7 @@ HINT = (
 
 def format_violation(path: str, comment: Comment) -> str:
     return (
-        f"{path}:{comment.line}:{comment.col}: {comment.kind.value} not allowed: "
+        f"{path}:{comment.line}:{comment.col}: {CODES[comment.kind]} {comment.kind.value} not allowed: "
         f"{comment.text[:60]}"
     )
 
