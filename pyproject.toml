@@ -1,6 +1,6 @@
 [project]
 name = "no-comments"
-version = "0.1.0"
+version = "0.2.0"
 description = "pre-commit hook that rejects newly added code comments"
 readme = "README.md"
 authors = [
