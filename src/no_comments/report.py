@@ -13,10 +13,8 @@ HINT = (
 
 
 def format_violation(path: str, comment: Comment) -> str:
-    return (
-        f"{path}:{comment.line}:{comment.col}: {CODES[comment.kind]} {comment.kind.value} not allowed: "
-        f"{comment.text[:60]}"
-    )
+    rule = f"{CODES[comment.kind]} {comment.kind.value} not allowed"
+    return f"{path}:{comment.line}:{comment.col}: {rule}: {comment.text[:60]}"
 
 
 def print_violations(violations: Iterable[tuple[str, Comment]]) -> None:
