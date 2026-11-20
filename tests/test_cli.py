@@ -1,3 +1,8 @@
+import os
+import shlex
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -128,3 +133,89 @@ def test_repository_source_has_no_comments(monkeypatch, capsys):
     files += [str(p.relative_to(ROOT)) for p in (ROOT / "tests").rglob("*.sh")]
     assert main(["audit", *files]) == 0
     assert capsys.readouterr().out == ""
+
+
+PRE_COMMIT = shutil.which("pre-commit")
+needs_pre_commit = pytest.mark.skipif(
+    PRE_COMMIT is None or not (ROOT / ".git").exists(),
+    reason="needs pre-commit on PATH and this repository checked out with git",
+)
+
+
+@pytest.fixture(scope="session")
+def pre_commit_home(tmp_path_factory):
+    return tmp_path_factory.mktemp("pre-commit-home")
+
+
+def pre_commit(repo, home, *args):
+    assert PRE_COMMIT is not None
+    env = {**os.environ, "PRE_COMMIT_HOME": str(home)}
+    return subprocess.run(
+        [PRE_COMMIT, *args], cwd=repo.root, env=env, capture_output=True, text=True
+    )
+
+
+@needs_pre_commit
+def test_try_repo_blocks_violation_then_passes(repo, pre_commit_home):
+    repo.write("a.py", "x = 1\n")
+    repo.commit()
+    repo.stage("a.py", "x = 1\n# 修复 bug\n")
+    result = pre_commit(repo, pre_commit_home, "try-repo", str(ROOT), "no-comments")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "a.py:2:1: NC001 comment not allowed: # 修复 bug" in result.stdout
+    assert HINT in result.stdout
+    repo.stage("a.py", "x = 1\ny = 2\n")
+    result = pre_commit(repo, pre_commit_home, "try-repo", str(ROOT), "no-comments")
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@needs_pre_commit
+def test_try_repo_ref_range(repo, pre_commit_home):
+    repo.write("a.py", "# old\nx = 1\n")
+    start = repo.commit()
+    repo.write("a.py", "# old\nx = 1\n# in range\n")
+    end = repo.commit()
+    result = pre_commit(
+        repo,
+        pre_commit_home,
+        "try-repo",
+        str(ROOT),
+        "no-comments",
+        "--from-ref",
+        start,
+        "--to-ref",
+        end,
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "a.py:3:1: NC001 comment not allowed: # in range" in result.stdout
+    assert "# old" not in result.stdout
+
+
+@needs_pre_commit
+def test_installed_hook_blocks_commit(repo, pre_commit_home):
+    exe = shlex.quote(str(Path(sys.executable).parent / "no-comments"))
+    repo.write(
+        ".pre-commit-config.yaml",
+        "repos:\n"
+        "  - repo: local\n"
+        "    hooks:\n"
+        "      - id: no-comments\n"
+        "        name: no-comments\n"
+        f"        entry: {exe} check\n"
+        "        language: system\n"
+        "        types_or: [python, pyi, shell]\n",
+    )
+    repo.write("a.py", "x = 1\n")
+    repo.commit()
+    assert pre_commit(repo, pre_commit_home, "install").returncode == 0
+    repo.stage("a.py", "x = 1\n# 修复 bug\n")
+    blocked = subprocess.run(
+        ["git", "commit", "-m", "add"], cwd=repo.root, capture_output=True, text=True
+    )
+    assert blocked.returncode != 0
+    assert "NC001" in blocked.stdout + blocked.stderr
+    repo.stage("a.py", "x = 1\ny = 2\n")
+    passed = subprocess.run(
+        ["git", "commit", "-m", "add"], cwd=repo.root, capture_output=True, text=True
+    )
+    assert passed.returncode == 0, passed.stdout + passed.stderr
