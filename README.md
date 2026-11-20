@@ -11,7 +11,7 @@ Claude Code、Codex 等 agent 写的注释，多是变更叙事、对代码的�
 ```yaml
 repos:
   - repo: https://github.com/AtticusZeller/no-comments
-    rev: v0.2.0
+    rev: v0.3.0
     hooks:
       - id: no-comments
 ```
@@ -91,7 +91,7 @@ pre-commit run no-comments --from-ref origin/main --to-ref HEAD
 `audit` 列出指定路径下所有违规的注释和 docstring，不区分新旧，退出码始终为 `0`：
 
 ```sh
-uv tool install git+https://github.com/AtticusZeller/no-comments@v0.2.0
+uv tool install git+https://github.com/AtticusZeller/no-comments@v0.3.0
 no-comments audit                      # 不给路径时检查 git ls-files 的全部文件
 no-comments audit --allow '^TODO\(' .  # 和 check 用同一套放行规则
 ```
