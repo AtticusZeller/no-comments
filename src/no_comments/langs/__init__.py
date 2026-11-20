@@ -3,8 +3,8 @@ from enum import Enum
 
 
 class Kind(Enum):
-    COMMENT = "NC001 comment"
-    DOCSTRING = "NC002 docstring"
+    COMMENT = "comment"
+    DOCSTRING = "docstring"
 
 
 @dataclass(frozen=True)
