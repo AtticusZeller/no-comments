@@ -17,6 +17,7 @@ PYTHON_PREFIXES = (
 )
 SHELL_PREFIXES = ("shellcheck",)
 _CODING = re.compile(r"coding[:=]")
+_TRAILING_HASH = re.compile(r"\s#")
 
 
 def is_allowed(lang: str, comment: Comment, extra: Sequence[re.Pattern[str]] = ()) -> bool:
@@ -27,11 +28,9 @@ def is_allowed(lang: str, comment: Comment, extra: Sequence[re.Pattern[str]] = (
         return True
     if text.startswith(COMMON_PREFIXES):
         return True
-    if lang == "python":
-        if comment.line <= 2 and _CODING.search(text):
-            return True
-        if text.startswith(PYTHON_PREFIXES):
-            return True
-    if lang == "shell" and text.startswith(SHELL_PREFIXES):
+    if lang == "python" and comment.line <= 2 and _CODING.search(text):
+        return True
+    tool_prefixes = PYTHON_PREFIXES if lang == "python" else SHELL_PREFIXES
+    if text.startswith(tool_prefixes) and not _TRAILING_HASH.search(text):
         return True
     return any(pattern.search(text) for pattern in extra)

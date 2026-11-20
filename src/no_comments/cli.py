@@ -7,14 +7,14 @@ from pathlib import Path
 
 from no_comments import report
 from no_comments.allow import is_allowed
-from no_comments.compare import new_comments
+from no_comments.compare import Pool, new_comments, pool
 from no_comments.diff import (
     GitError,
     base_revisions,
     collect_changes,
     diff_range,
     git,
-    read_blob,
+    read_blobs,
 )
 from no_comments.langs import Comment, ParseError, python, shell
 
@@ -27,12 +27,10 @@ EXTRACTORS: dict[str, Callable[[str], list[Comment]]] = {
 _PYTHON_INTERPRETER = re.compile(r"python[0-9.]*")
 
 
-def shebang_language(path: Path) -> str | None:
-    with path.open("rb") as handle:
-        first = handle.readline(512)
-    if not first.startswith(b"#!"):
+def shebang_language(first_line: bytes) -> str | None:
+    if not first_line.startswith(b"#!"):
         return None
-    words = first[2:].decode("utf-8", "replace").split()
+    words = first_line[2:].decode("utf-8", "replace").split()
     if words and os.path.basename(words[0]) == "env":
         words = [w for w in words[1:] if not w.startswith("-") and "=" not in w]
     if not words:
@@ -48,51 +46,68 @@ def shebang_language(path: Path) -> str | None:
 def detect_language(path: Path) -> str | None:
     if not path.is_file():
         return None
-    return EXTENSIONS.get(path.suffix) or shebang_language(path)
+    if path.suffix in EXTENSIONS:
+        return EXTENSIONS[path.suffix]
+    with path.open("rb") as handle:
+        return shebang_language(handle.readline(512))
 
 
-def load_comments(path: Path, lang: str) -> list[Comment]:
+def is_supported(name: str) -> bool:
+    return Path(name).suffix in EXTENSIONS or detect_language(Path(name)) is not None
+
+
+def parse(source: str, lang: str) -> list[Comment]:
+    return EXTRACTORS[lang](source)
+
+
+def load_comments(path: Path, lang: str, warn: bool = True) -> list[Comment]:
     try:
-        source = path.read_bytes().decode("utf-8-sig")
-        return EXTRACTORS[lang](source)
+        return parse(path.read_bytes().decode("utf-8-sig"), lang)
     except (ParseError, UnicodeDecodeError) as exc:
-        print(f"no-comments: warning: skipping {path}: {exc}", file=sys.stderr)
+        if warn:
+            print(f"no-comments: warning: skipping {path}: {exc}", file=sys.stderr)
         return []
 
 
-def previous_comments(rev: str, path: str, lang: str) -> list[Comment]:
-    source = read_blob(rev, path)
-    if source is None:
-        return []
-    try:
-        return EXTRACTORS[lang](source)
-    except ParseError:
-        return []
+def previous_pool(rev: str, paths: list[str]) -> Pool:
+    versions = []
+    for path, source in read_blobs(rev, paths).items():
+        lang = EXTENSIONS.get(Path(path).suffix) or shebang_language(
+            source.split("\n", 1)[0].encode("utf-8")
+        )
+        if lang is None:
+            continue
+        try:
+            versions.append(parse(source, lang))
+        except ParseError:
+            continue
+    return pool(versions)
 
 
 def run_check(files: Sequence[str], extra: Sequence[re.Pattern[str]]) -> int:
+    targets = {os.path.normpath(name): name for name in files}
     refs = diff_range()
-    changes = collect_changes(refs)
-    bases: list[str] | None = None
-    violations: list[tuple[str, Comment]] = []
-    for name in files:
-        path = Path(name)
-        lang = detect_language(path)
-        change = changes.get(os.path.normpath(name))
-        if lang is None or change is None or not change.added:
+    changes = collect_changes(refs, is_supported)
+    if not any(c.new_path in targets and c.added for c in changes):
+        return 0
+    current: dict[str, tuple[list[Comment], set[int]]] = {}
+    languages: dict[str, str] = {}
+    for change in changes:
+        if change.new_path is None:
             continue
-        current = load_comments(path, lang)
-        if not current:
+        lang = detect_language(Path(change.new_path))
+        if lang is None:
             continue
-        if bases is None:
-            bases = base_revisions(refs)
-        old_path = change.old_path
-        previous = [previous_comments(rev, old_path, lang) for rev in bases] if old_path else []
-        violations += [
-            (name, c)
-            for c in new_comments(current, previous, change.added)
-            if not is_allowed(lang, c, extra)
-        ]
+        languages[change.new_path] = lang
+        warn = change.new_path in targets
+        current[change.new_path] = (load_comments(Path(change.new_path), lang, warn), change.added)
+    old_paths = [c.old_path for c in changes if c.old_path is not None]
+    previous = [previous_pool(rev, old_paths) for rev in base_revisions(refs)]
+    violations = [
+        (targets[path], comment)
+        for path, comment in new_comments(current, previous)
+        if path in targets and not is_allowed(languages[path], comment, extra)
+    ]
     if not violations:
         return 0
     report.print_violations(violations)

@@ -9,11 +9,11 @@
 | 模块 | 职责 |
 | --- | --- |
 | `cli.py` | 解析参数，按扩展名或 shebang 判断语言，串起 `check` 和 `audit` 的流程，决定退出码 |
-| `diff.py` | 调用 git：解析新增行号和旧路径，确定旧版本 ref，读取旧版本内容 |
-| `compare.py` | 按文本出现次数比较新旧版本，选出新增的注释 |
+| `diff.py` | 调用 git：列出改动文件，解析新增行号和旧路径，确定旧版本 ref，批量读取旧版本内容 |
+| `compare.py` | 按文本出现次数比较整个改动的新旧版本，选出新增的注释 |
 | `allow.py` | 默认放行规则和 `--allow` |
 | `report.py` | 规则编号 `CODES`、输出格式、结尾提示 |
-| `langs/__init__.py` | `Comment`、`Kind`、`ParseError` |
+| `langs/__init__.py` | `Comment`、`Kind`、`ParseError`，以及把一行里接连的几段注释拆开的 `comment_segments` |
 | `langs/python.py` | 用 `tokenize` 提取注释，用 `ast` 提取单独成句的字符串 |
 | `langs/shell.py` | 用 tree-sitter-bash 提取 `comment` 节点 |
 
@@ -21,24 +21,26 @@
 
 `check` 依次经过五步：
 
-1. `collect_changes` 运行一次 diff，得到每个文件的新增行号和旧路径。
+1. `collect_changes` 先用 `--name-status` 列出改动文件，再只对支持语言的文件做内容 diff，得到新增行号和旧路径。
 2. `base_revisions` 确定旧版本。
-3. 当前文件和旧版本用同一个 `extract()` 提取注释。
-4. `new_comments` 按出现次数选出新增项，再交给 `is_allowed` 过滤。
+3. 这次改动涉及的所有支持语言的文件，新版本从磁盘读取，旧版本用 `read_blobs` 一次读出，都用同一个 `extract()` 提取注释。
+4. `new_comments` 按出现次数选出新增项，只保留传入文件里的，再交给 `is_allowed` 过滤。
 5. `report` 输出结果。
 
 `audit` 跳过第 1、2、4 步的 diff 和比较，直接提取、过滤、输出。
 
 ### 关键决策
 
-- 每次运行只调用一次 `git diff -M -U0`，不加路径限制。加了路径限制，git 就看不到改名的源文件，改名后的文件会被当成全新文件。
+- diff 分两步：`git diff --name-status -z -M` 列出改动文件和改名关系，再只对新旧路径中有支持语言的条目执行 `git diff -M -U0 -- <路径>`。改名的两端都在路径列表里，所以改名识别不受影响；无关的二进制文件、lock 文件、第三方代码不再参与内容 diff，耗时和内存不随它们增长。路径列表过长时退回不限路径。
 - diff 命令固定带上 `--src-prefix=a/`、`--dst-prefix=b/`、`--no-relative`、`--no-ext-diff`、`--no-textconv`、`-c core.quotepath=off`，避免受用户 git 配置影响。解析路径时要处理 C 风格引号，以及含空格的路径末尾的 TAB。`---` 和 `+++` 只在第一个 `@@` 之前当作文件头解析，因为 `-U0` 的内容行也可能以它们开头。
 - 旧版本的 ref 这样取：
   - 暂存区模式用 `HEAD`；还没有任何提交时，旧版本为空。
   - 范围模式用 `git merge-base FROM TO`，和 `FROM...TO` 的 diff 基准一致。
   - 暂存区模式下如果正在 merge，取 `HEAD` 和 `MERGE_HEAD` 两边的并集，同一文本的次数取较大值，这样对方分支带来的注释不算新增。
-- 比较的依据是出现次数：同一文本多出 k 次，就在新增行上按文件顺序报告前 k 条。用次数而不用集合，是为了新加一条和已有注释文本相同的注释时也能报出来。
-- 比较前先规范化文本。注释取去掉 `#` 和首尾空白后的内容；docstring 用 `inspect.cleandoc` 规范缩进，挪进类里重新缩进不算新增。
+- 比较的依据是出现次数，范围是整个改动：把这次 diff 涉及的所有文件的旧版本合起来计数，新版本同样合起来计数。同一文本多出 k 次，就按路径和位置顺序在新增行上报告前 k 条。合起来算是为了让拆分、合并文件和 git 没识别出的改名不产生误报；用次数而不用集合，是为了新加一条和已有注释文本相同的注释时也能报出来。pre-commit 可能把文件分给多个进程，每个进程都按整个改动计算、只输出自己拿到的文件，所以结果和分组无关。
+- 比较前先规范化文本。注释取去掉开头所有 `#` 和空白后的内容，这样取消注释一段代码时其中原有的注释不算新增；docstring 用 `inspect.cleandoc` 规范缩进，挪进类里重新缩进不算新增。
+- 一条注释 token 按「前面有两个以上空白的 `#`」或「前后都是空白的 `#`」拆成几段，逐段放行、逐段比较，堵住 `# noqa  # 说明` 这种借工具指令夹带说明的写法。去掉 `#` 和空白后为空的段并入下一段，避免把 `#   # 注释` 拆出空注释。工具指令前缀只在段内没有其他前面带空白的 `#` 时放行。
+- `ast.parse` 时屏蔽 `SyntaxWarning`，用户代码里的非法转义不会在 hook 输出里留下无文件名的警告。
 - 按语法识别注释，不用正则：Python 注释用 `tokenize`，单独成句的字符串用 `ast`，Shell 用 tree-sitter。这样字符串和 heredoc 里的 `#` 不会被误判。
 - 任何一步解析失败，都给出警告并跳过整个文件，不影响退出码。旧版本解析失败时，按旧版本为空处理。
 - 不做自动修复，不支持配置文件；要排除路径，用 pre-commit 的 `exclude`。
@@ -70,10 +72,21 @@ pre-commit install
 
 文档和代码在同一个 PR 里更新：用户能看到的行为变了，就更新 README；设计变了，就更新本文件的「设计」一节。README 只写当前行为，没解决的问题放进 GitHub issues。
 
+## 真实仓库回放
+
+`scripts/replay.py` 在真实仓库的提交历史上逐个提交以范围模式运行 `check`，并用独立的方法核对结果：按 `--no-renames` 列出改动文件，自己计算每段文本新增的次数和落在新增行上的条数，与工具报出的条数逐个比较。不一致记为 `mismatch`，同时统计退出码 2、警告和超过 2 秒的提交。脚本在临时 worktree 里检出提交，不影响被测仓库的工作区。
+
+```sh
+uv run python scripts/replay.py --commits 200 --out /tmp/replay <本地仓库路径>...
+```
+
+`--tool` 可以指定别的版本的可执行文件，用来和旧版本对比。回放需要网络和较长时间，不进 pytest 和常规 CI。
+
 ## 发布
 
 按以下步骤发布：
 
-1. 改 `pyproject.toml` 里的 `version`，然后运行 `uv lock`。
-2. 改 README 里 `rev:` 和 `uv tool install ...@v` 中的版本号。`tests/test_docs.py` 检查这两处和 `version` 一致。
-3. 合并到 `main` 后，打标签并推送：`git tag -a vX.Y.Z -m vX.Y.Z && git push origin vX.Y.Z`。
+1. 在这些公开仓库的完整克隆上回放，`mismatch`、`exit2`、`warning`、`slow` 都为 0，或者每一项都有对应 issue：AtticusZeller/sing-box-cli、psf/requests、pallets/click、fastapi/typer、nvm-sh/nvm、acmesh-official/acme.sh。维护者自己的私有仓库在本地回放，结果不进仓库。
+2. 改 `pyproject.toml` 里的 `version`，然后运行 `uv lock`。
+3. 改 README 里 `rev:` 和 `uv tool install ...@v` 中的版本号。`tests/test_docs.py` 检查这两处和 `version` 一致。
+4. 合并到 `main` 后，打标签并推送：`git tag -a vX.Y.Z -m vX.Y.Z && git push origin vX.Y.Z`。

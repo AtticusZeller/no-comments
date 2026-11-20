@@ -1,4 +1,7 @@
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -232,3 +235,28 @@ def test_ast_syntax_error_warns_and_skips(repo, capsys):
     repo.stage("bad.py", "def f(:\n    pass\n# c\n")
     assert main(["check", "bad.py"]) == 0
     assert "bad.py" in capsys.readouterr().err
+
+
+def test_comment_segments():
+    assert [(c.col, c.text) for c in extract("x = f()  # noqa  # 修复 bug\n")] == [
+        (10, "# noqa"),
+        (18, "# 修复 bug"),
+    ]
+    assert [c.text for c in extract("# 颜色 #fff\n# 见 issue #123\n")] == [
+        "# 颜色 #fff",
+        "# 见 issue #123",
+    ]
+    assert [c.body for c in extract("#             # NOTE:RMSE\n")] == ["NOTE:RMSE"]
+
+
+@pytest.mark.parametrize("warnings_env", ["default", "error"])
+def test_invalid_escape_does_not_warn(repo, warnings_env):
+    repo.stage("a.py", 'x = "\\["\n# c\n')
+    exe = Path(sys.executable).parent / "no-comments"
+    env = {**os.environ, "PYTHONWARNINGS": warnings_env}
+    result = subprocess.run(
+        [str(exe), "check", "a.py"], cwd=repo.root, env=env, capture_output=True, text=True
+    )
+    assert result.returncode == 1
+    assert "a.py:2:1: NC001" in result.stdout
+    assert result.stderr == ""

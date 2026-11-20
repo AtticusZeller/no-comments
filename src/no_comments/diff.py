@@ -1,6 +1,7 @@
 import os
 import re
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 _HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
@@ -13,11 +14,9 @@ _DIFF = (
     "--no-textconv",
     "--no-color",
     "--no-relative",
-    "--src-prefix=a/",
-    "--dst-prefix=b/",
     "-M",
-    "-U0",
 )
+_MAX_PATHSPEC_BYTES = 100_000
 
 Refs = tuple[str, str]
 
@@ -29,6 +28,7 @@ class GitError(Exception):
 @dataclass
 class FileDiff:
     old_path: str | None
+    new_path: str | None
     added: set[int] = field(default_factory=set)
 
 
@@ -40,9 +40,11 @@ def diff_range() -> Refs | None:
     return None
 
 
-def _git_bytes(*args: str) -> bytes:
+def _git_bytes(*args: str, stdin: bytes | None = None) -> bytes:
     try:
-        proc = subprocess.run(["git", "--literal-pathspecs", *args], capture_output=True)
+        proc = subprocess.run(
+            ["git", "--literal-pathspecs", *args], input=stdin, capture_output=True
+        )
     except FileNotFoundError as exc:
         raise GitError("git executable not found") from exc
     if proc.returncode != 0:
@@ -90,8 +92,8 @@ def _hunk_lines(line: str) -> range:
     return range(start, start + count)
 
 
-def parse_diff(text: str) -> dict[str, FileDiff]:
-    files: dict[str, FileDiff] = {}
+def parse_diff(text: str) -> list[FileDiff]:
+    files: list[FileDiff] = []
     current: FileDiff | None = None
     in_header = False
     old: str | None = None
@@ -108,15 +110,47 @@ def parse_diff(text: str) -> dict[str, FileDiff]:
         elif line.startswith("@@"):
             if in_header:
                 in_header = False
-                current = None if new is None else files.setdefault(new, FileDiff(old))
-            if current is not None:
+                current = FileDiff(old, new)
+                files.append(current)
+            if current is not None and current.new_path is not None:
                 current.added.update(_hunk_lines(line))
     return files
 
 
-def collect_changes(refs: Refs | None) -> dict[str, FileDiff]:
+def changed_paths(target: str) -> list[tuple[str | None, str | None]]:
+    fields = git(*_DIFF, "--name-status", "-z", target).split("\0")
+    entries: list[tuple[str | None, str | None]] = []
+    i = 0
+    while i < len(fields) and fields[i]:
+        status = fields[i][0]
+        if status in "RC":
+            entries.append((fields[i + 1], fields[i + 2]))
+            i += 3
+            continue
+        path = fields[i + 1]
+        entries.append((None if status == "A" else path, None if status == "D" else path))
+        i += 2
+    return entries
+
+
+def collect_changes(
+    refs: Refs | None, relevant: Callable[[str], bool] = lambda _: True
+) -> list[FileDiff]:
     target = "--cached" if refs is None else f"{refs[0]}...{refs[1]}"
-    return parse_diff(git(*_DIFF, target))
+    paths = sorted(
+        {
+            path
+            for pair in changed_paths(target)
+            if any(relevant(p) for p in pair if p is not None)
+            for path in pair
+            if path is not None
+        }
+    )
+    if not paths:
+        return []
+    fits = sum(len(p.encode("utf-8")) + 1 for p in paths) < _MAX_PATHSPEC_BYTES
+    pathspec = ["--", *paths] if fits else []
+    return parse_diff(git(*_DIFF, "--src-prefix=a/", "--dst-prefix=b/", "-U0", target, *pathspec))
 
 
 def _is_commit(rev: str) -> bool:
@@ -135,8 +169,25 @@ def base_revisions(refs: Refs | None) -> list[str]:
     return ["HEAD", "MERGE_HEAD"] if _is_commit("MERGE_HEAD") else ["HEAD"]
 
 
-def read_blob(rev: str, path: str) -> str | None:
-    try:
-        return _git_bytes("cat-file", "blob", f"{rev}:{path}").decode("utf-8-sig")
-    except (GitError, UnicodeDecodeError):
-        return None
+def read_blobs(rev: str, paths: list[str]) -> dict[str, str]:
+    paths = [p for p in paths if "\n" not in p]
+    if not paths:
+        return {}
+    out = _git_bytes("cat-file", "--batch", stdin="".join(f"{rev}:{p}\n" for p in paths).encode())
+    blobs: dict[str, str] = {}
+    pos = 0
+    for path in paths:
+        end = out.index(b"\n", pos)
+        header = out[pos:end]
+        pos = end + 1
+        if header.endswith((b" missing", b" ambiguous")):
+            continue
+        _, kind, size = header.rsplit(b" ", 2)
+        data = out[pos : pos + int(size)]
+        pos += int(size) + 1
+        if kind == b"blob":
+            try:
+                blobs[path] = data.decode("utf-8-sig")
+            except UnicodeDecodeError:
+                pass
+    return blobs
