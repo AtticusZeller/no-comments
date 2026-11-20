@@ -1,4 +1,5 @@
-from collections.abc import Iterable
+import re
+from collections.abc import Sequence
 
 from no_comments.langs import Comment, Kind
 
@@ -11,17 +12,32 @@ HINT = (
     "用 help=、description= 显式传入。"
 )
 
+SHAPE_HINT = (
+    '检测到张量形状注释：把形状写进 jaxtyping 类型标注（如 `Float[Tensor, "V 3 10"]`），'
+    "并在测试中用 `--jaxtyping-packages` 开启运行时检查。"
+)
+
+_TERM = r"(?:\d*[A-Za-z_]\w*'*|\d+|\.\.\.|\*(?:[A-Za-z_]\w*)?)"
+_DIM = rf"{_TERM}(?:\s*(?:\*\*|//|[*+\-/])\s*{_TERM})*"
+_SHAPE = re.compile(rf"[(\[]\s*{_DIM}(?:\s*,\s*{_DIM})*(?:\s*,\s*{_DIM}|\s*,)\s*[)\]]")
+
+
+def is_shape(comment: Comment) -> bool:
+    return comment.kind is Kind.COMMENT and _SHAPE.match(comment.body) is not None
+
 
 def format_violation(path: str, comment: Comment) -> str:
     rule = f"{CODES[comment.kind]} {comment.kind.value} not allowed"
     return f"{path}:{comment.line}:{comment.col}: {rule}: {comment.text[:60]}"
 
 
-def print_violations(violations: Iterable[tuple[str, Comment]]) -> None:
+def print_violations(violations: Sequence[tuple[str, Comment]]) -> None:
     for path, comment in violations:
         print(format_violation(path, comment))
 
 
-def print_hint() -> None:
+def print_hint(violations: Sequence[tuple[str, Comment]]) -> None:
     print()
     print(HINT)
+    if any(is_shape(comment) for _, comment in violations):
+        print(SHAPE_HINT)

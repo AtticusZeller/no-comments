@@ -96,20 +96,30 @@ no-comments audit                      # 不给路径时检查 git ls-files 的�
 no-comments audit --allow '^TODO\(' .  # 和 check 用同一套放行规则
 ```
 
-### 排除目录
+### 排除目录和框架帮助文本
 
-用 pre-commit 自带的 `exclude` 排除目录，工具本身没有配置文件：
+工具本身没有配置文件，排除目录用 pre-commit 自带的 `exclude`，比如在 hook 下写 `exclude: ^(vendor|migrations)/`。发布给外部用户的库，如果公共 API 确实需要文档，同样用 `exclude` 排除对应目录。typer、FastAPI 这类框架会读取 docstring 作为帮助文本，改成显式传入 `help=`、`description=`。
 
-```yaml
-      - id: no-comments
-        exclude: ^(vendor|migrations)/
+### ML 代码里的张量形状
+
+形状注释（如 `# (V, 3, 10)`）同样会被拦下，hook 会额外提示改用 jaxtyping。形状写进类型标注后，`reshape`、`permute` 改了形状，测试就会报错，不会像注释那样悄悄过时。jaxtyping 支持 PyTorch、JAX、NumPy、MLX、TensorFlow，不依赖 JAX；mypy 和 pyright 把 `Float[Tensor, "..."]` 当作普通的 `Tensor`，形状靠运行时检查。
+
+```python
+from jaxtyping import Float
+from torch import Tensor
+
+
+def render(verts: Float[Tensor, "V 3 10"]) -> Float[Tensor, "1 H W 3"]: ...
 ```
 
-如果是发布给外部用户的库，公共 API 确实需要文档，同样用 `exclude` 排除对应目录。
+JAX 的写法相同，把 `Tensor` 换成 `jax.Array`。运行时检查可以只在测试时开启，需要安装 `jaxtyping` 和 `beartype`，`my_pkg` 换成自己的包名：
 
-### 框架的帮助文本
+```toml
+[tool.pytest.ini_options]
+addopts = "--jaxtyping-packages=my_pkg,beartype.beartype"
+```
 
-typer、FastAPI 这类框架会读取 docstring 作为帮助文本。改成显式传入 `help=`、`description=`，不要依赖 docstring。
+函数内部的中间张量有两种写法：在开启了检查的函数里写 `assert isinstance(h, Float[Tensor, "B H W 3"])`，维度名和参数共享；或者用 einops 的 `rearrange(x, "b c h w -> b h w c")`，把形状写在模式串里。具体 API 以 jaxtyping 当前版本的文档为准。
 
 ## 已知局限
 

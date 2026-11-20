@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from no_comments.cli import detect_language, main
-from no_comments.report import HINT
+from no_comments.report import HINT, SHAPE_HINT
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -465,3 +465,46 @@ def test_unrelated_large_files_are_not_diffed(repo, monkeypatch):
     assert main(["check", "a.py"]) == 0
     content_diff = [c for c in calls if "-U0" in c]
     assert content_diff and "vendor.js" not in content_diff[0] and "a.py" in content_diff[0]
+
+
+@pytest.mark.parametrize(
+    "comment",
+    [
+        "# (V, 3, 10)",
+        "# [1, H, W, 3]",
+        "# (B, T, D) after projection",
+        "# (*batch, 3)",
+        "# (num_envs,)",
+        "# (V', 3, K)",
+        "# (B, J + 1, 4, 4)",
+        "# (*, 55*3*3)",
+    ],
+)
+def test_shape_comment_adds_jaxtyping_hint(repo, capsys, comment):
+    repo.stage("a.py", f"x = f()  {comment}\n")
+    assert main(["check", "a.py"]) == 1
+    out = capsys.readouterr().out
+    assert "NC001" in out
+    assert out.rstrip().endswith(SHAPE_HINT)
+
+
+@pytest.mark.parametrize("comment", ["# (see issue 12)", "# [TODO]", "# (B)", "# [-pi, pi]"])
+def test_other_comments_have_no_shape_hint(repo, capsys, comment):
+    repo.stage("a.py", f"x = f()  {comment}\n")
+    assert main(["check", "a.py"]) == 1
+    assert SHAPE_HINT not in capsys.readouterr().out
+
+
+def test_shape_hint_printed_once(repo, capsys):
+    repo.stage("a.py", "x = f()  # (B, N, 3)\n# 修复 bug\ny = g()  # [B, H, W]\n")
+    repo.stage("b.py", "z = h()  # (T, D)\n")
+    assert main(["check", "a.py", "b.py"]) == 1
+    out = capsys.readouterr().out
+    assert out.count(SHAPE_HINT) == 1
+    assert out.count("NC001") == 4
+
+
+def test_shape_docstring_has_no_shape_hint(repo, capsys):
+    repo.stage("a.py", '"""(B, N, 3)"""\n')
+    assert main(["check", "a.py"]) == 1
+    assert SHAPE_HINT not in capsys.readouterr().out

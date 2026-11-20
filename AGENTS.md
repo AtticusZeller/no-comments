@@ -12,7 +12,7 @@
 | `diff.py` | 调用 git：列出改动文件，解析新增行号和旧路径，确定旧版本 ref，批量读取旧版本内容 |
 | `compare.py` | 按文本出现次数比较整个改动的新旧版本，选出新增的注释 |
 | `allow.py` | 默认放行规则和 `--allow` |
-| `report.py` | 规则编号 `CODES`、输出格式、结尾提示 |
+| `report.py` | 规则编号 `CODES`、输出格式、结尾提示；违规里有张量形状注释时追加一条 jaxtyping 提示，每次运行只打印一次 |
 | `langs/__init__.py` | `Comment`、`Kind`、`ParseError`，以及把一行里接连的几段注释拆开的 `comment_segments` |
 | `langs/python.py` | 用 `tokenize` 提取注释，用 `ast` 提取单独成句的字符串 |
 | `langs/shell.py` | 用 tree-sitter-bash 提取 `comment` 节点 |
