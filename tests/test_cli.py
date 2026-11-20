@@ -170,7 +170,8 @@ def test_audit_lists_all_comments_and_exits_0(repo, capsys):
 
 def test_repository_source_has_no_comments(monkeypatch, capsys):
     monkeypatch.chdir(ROOT)
-    files = [str(p.relative_to(ROOT)) for d in ("src", "tests") for p in (ROOT / d).rglob("*.py")]
+    dirs = ("src", "tests", "scripts")
+    files = [str(p.relative_to(ROOT)) for d in dirs for p in (ROOT / d).rglob("*.py")]
     files += [str(p.relative_to(ROOT)) for p in (ROOT / "tests").rglob("*.sh")]
     assert main(["audit", *files]) == 0
     assert capsys.readouterr().out == ""
@@ -370,3 +371,97 @@ def test_comment_written_while_resolving_merge_is_reported(repo, capsys):
     assert main(["check", "a.py"]) == 1
     out = [s for s in capsys.readouterr().out.splitlines() if "NC00" in s]
     assert out == ["a.py:3:1: NC001 comment not allowed: # while resolving"]
+
+
+MOVED = 'def moved():\n    """Moved doc."""\n    # explain moved\n    return 1\n'
+SPLIT_SOURCE = "def keep():\n    return 0\n\n\n" + MOVED
+
+
+def test_function_split_into_new_file_passes(repo):
+    repo.write("big.py", SPLIT_SOURCE)
+    repo.commit()
+    repo.stage("big.py", "def keep():\n    return 0\n")
+    repo.stage(
+        "small.py", 'def moved():\n    """Moved doc."""\n    # explain moved\n    return 1\n'
+    )
+    assert main(["check", "big.py", "small.py"]) == 0
+
+
+def test_split_with_one_new_comment_reports_only_it(repo, capsys):
+    repo.write("big.py", SPLIT_SOURCE)
+    repo.commit()
+    repo.stage("big.py", "def keep():\n    return 0\n")
+    repo.stage(
+        "small.py",
+        'def moved():\n    """Moved doc."""\n    # explain moved\n    # brand new\n    return 1\n',
+    )
+    assert main(["check", "small.py"]) == 1
+    out = [s for s in capsys.readouterr().out.splitlines() if "NC00" in s]
+    assert out == ["small.py:4:5: NC001 comment not allowed: # brand new"]
+
+
+def test_rename_with_heavy_rewrite_keeps_old_comments(repo):
+    repo.write("old.py", "# keep me\nx = 1\ny = 2\n")
+    repo.commit()
+    repo.git("rm", "-q", "old.py")
+    repo.stage("new.py", "# keep me\na = 10\nb = 20\nc = 30\n")
+    assert main(["check", "new.py"]) == 0
+
+
+def test_move_into_file_deleted_in_same_change_range_mode(repo, monkeypatch):
+    repo.write("a.py", "def f():\n    # from a\n    return 1\n")
+    start = repo.commit()
+    repo.git("rm", "-q", "a.py")
+    repo.write("b.py", "def f():\n    # from a\n    return 1\n\n\ndef g():\n    return 2\n")
+    end = repo.commit()
+    monkeypatch.setenv("PRE_COMMIT_FROM_REF", start)
+    monkeypatch.setenv("PRE_COMMIT_TO_REF", end)
+    assert main(["check", "b.py"]) == 0
+
+
+def test_narrative_after_pragma_is_reported(repo, capsys):
+    repo.stage("a.py", "x = f()  # noqa  # 修复 bug\ny = g()  # type: ignore #修复\n")
+    assert main(["check", "a.py"]) == 1
+    out = [s for s in capsys.readouterr().out.splitlines() if "NC00" in s]
+    assert out == [
+        "a.py:1:18: NC001 comment not allowed: # 修复 bug",
+        "a.py:2:10: NC001 comment not allowed: # type: ignore #修复",
+    ]
+
+
+def test_dropping_pragma_before_existing_note_passes(repo):
+    repo.write("a.py", "ok = isinstance(x, str)  # type: ignore[misc]  # runtime guard\n")
+    repo.commit()
+    repo.stage("a.py", "ok = isinstance(x, str)  # runtime guard\n")
+    assert main(["check", "a.py"]) == 0
+
+
+def test_uncommenting_code_keeps_inner_comments(repo):
+    repo.write("a.py", "def f():\n    return 1\n#     # Create items\n#     items = []\n")
+    repo.commit()
+    repo.stage("a.py", "def f():\n    return 1\n    # Create items\n    items = []\n")
+    assert main(["check", "a.py"]) == 0
+
+
+def test_new_nested_comment_text_is_reported(repo, capsys):
+    repo.write("a.py", "x = 1\n")
+    repo.commit()
+    repo.stage("a.py", "x = 1\n#   # 新说明\n")
+    assert main(["check", "a.py"]) == 1
+    assert "a.py:2:1: NC001 comment not allowed: #   # 新说明" in capsys.readouterr().out
+
+
+def test_unrelated_large_files_are_not_diffed(repo, monkeypatch):
+    from no_comments import diff
+
+    calls = []
+    real_git = diff.git
+    monkeypatch.setattr(diff, "git", lambda *a: calls.append(a) or real_git(*a))
+    repo.write("a.py", "x = 1\n")
+    repo.write("vendor.js", "a\n" * 1000)
+    repo.commit()
+    repo.stage("a.py", "x = 2\n")
+    repo.stage("vendor.js", "b\n" * 1000)
+    assert main(["check", "a.py"]) == 0
+    content_diff = [c for c in calls if "-U0" in c]
+    assert content_diff and "vendor.js" not in content_diff[0] and "a.py" in content_diff[0]

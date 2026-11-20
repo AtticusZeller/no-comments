@@ -61,3 +61,11 @@ def test_tricky_new_file_passes(repo, capsys):
 def test_bash_extension(repo, capsys):
     repo.stage("lib.bash", "# 启动服务\n")
     assert main(["check", "lib.bash"]) == 1
+
+
+def test_shellcheck_with_trailing_narrative_is_reported(repo, capsys):
+    repo.stage("run.sh", "echo $x  # shellcheck disable=SC2086  # 修复 bug\n")
+    assert main(["check", "run.sh"]) == 1
+    out = capsys.readouterr().out
+    assert "run.sh:1:39: NC001 comment not allowed: # 修复 bug" in out
+    assert "shellcheck disable" not in out.split("\n\n")[0]

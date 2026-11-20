@@ -1,7 +1,7 @@
 import tree_sitter_bash
 from tree_sitter import Language, Node, Parser
 
-from no_comments.langs import Comment
+from no_comments.langs import Comment, comment_segments
 
 _PARSER = Parser(Language(tree_sitter_bash.language()))
 
@@ -24,5 +24,5 @@ def extract(source: str) -> list[Comment]:
     for node in _comment_nodes(_PARSER.parse(data).root_node):
         row, byte_col = node.start_point
         col = len(lines[row][:byte_col].decode("utf-8")) + 1
-        comments.append(Comment(row + 1, col, node.text.decode("utf-8")))
+        comments += comment_segments(row + 1, col, node.text.decode("utf-8"))
     return comments

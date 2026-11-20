@@ -3,8 +3,9 @@ import inspect
 import io
 import re
 import tokenize
+import warnings
 
-from no_comments.langs import Comment, Kind, ParseError
+from no_comments.langs import Comment, Kind, ParseError, comment_segments
 
 _NEWLINE = re.compile(r"\r\n|\r|\n")
 
@@ -36,11 +37,14 @@ def _docstrings(tree: ast.AST, lines: list[str]) -> list[Comment]:
 def extract(source: str) -> list[Comment]:
     try:
         comments = [
-            Comment(tok.start[0], tok.start[1] + 1, tok.string)
+            segment
             for tok in tokenize.generate_tokens(io.StringIO(source).readline)
             if tok.type == tokenize.COMMENT
+            for segment in comment_segments(tok.start[0], tok.start[1] + 1, tok.string)
         ]
-        tree = ast.parse(source)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            tree = ast.parse(source)
     except (tokenize.TokenError, SyntaxError, ValueError) as exc:
         raise ParseError(str(exc)) from exc
     found = comments + _docstrings(tree, _NEWLINE.split(source))
