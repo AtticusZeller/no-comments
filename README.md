@@ -21,6 +21,8 @@ repos:
 pre-commit run no-comments --from-ref origin/main --to-ref HEAD
 ```
 
+不带 ref 运行 `pre-commit run --all-files` 时，只检查暂存区里新增的行，已经提交的文件会全部通过。要全量检查，用 `no-comments audit`。
+
 ## 列出存量注释
 
 ```sh

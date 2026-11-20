@@ -30,6 +30,9 @@ ROOT = Path(__file__).resolve().parent.parent
         ("tool", "#!/bin/sh\n", "shell"),
         ("tool", "#!/usr/bin/env node\n", None),
         ("tool", "plain text\n", None),
+        ("deploy.prod", "#!/bin/bash\n", "shell"),
+        ("run.local", "#!/usr/bin/env python3\n", "python"),
+        ("notes.txt", "plain\n", None),
     ],
 )
 def test_detect_language(tmp_path, name, content, expected):
@@ -105,6 +108,45 @@ def test_range_mode_reports_only_comments_added_in_range(repo, capsys, monkeypat
     assert "b.py:1:1: NC001" in out
     assert "old" not in out
     assert "before range" not in out
+
+
+def test_range_mode_on_diverged_branches(repo, capsys, monkeypatch):
+    repo.write("a.py", "x = 1\ny = 2\nz = 3\n")
+    base = repo.commit()
+    repo.write("a.py", "# main note\nx = 1\ny = 2\nz = 3\n")
+    repo.commit()
+    repo.git("checkout", "-q", "-b", "feature", base)
+    repo.write("a.py", "x = 1\ny = 2\nz = 3\n# feature note\n")
+    repo.commit()
+    monkeypatch.setenv("PRE_COMMIT_FROM_REF", "main")
+    monkeypatch.setenv("PRE_COMMIT_TO_REF", "feature")
+    assert main(["check", "a.py"]) == 1
+    out = capsys.readouterr().out
+    assert "a.py:4:1: NC001 comment not allowed: # feature note" in out
+    assert "main note" not in out
+
+
+@pytest.mark.xfail(strict=True, reason="needs merge-aware comparison from #3")
+def test_merge_conflict_resolution_keeps_incoming_comments(repo, capsys):
+    repo.write("a.py", "x = 1\n")
+    base = repo.commit()
+    repo.git("checkout", "-q", "-b", "feature", base)
+    repo.write("a.py", "x = 2\n# from feature\n")
+    repo.commit()
+    repo.git("checkout", "-q", "main")
+    repo.write("a.py", "x = 3\n")
+    repo.commit()
+    merge = subprocess.run(["git", "merge", "feature"], cwd=repo.root, capture_output=True)
+    assert merge.returncode != 0
+    repo.stage("a.py", "x = 3\n# from feature\n")
+    assert main(["check", "a.py"]) == 0, capsys.readouterr().out
+
+
+def test_non_utf8_file_warns_and_passes(repo, capsys):
+    (repo.root / "a.py").write_bytes(b"x = '\xe9'\n# c\n")
+    repo.git("add", "a.py")
+    assert main(["check", "a.py"]) == 0
+    assert "a.py" in capsys.readouterr().err
 
 
 def test_audit_lists_all_comments_and_exits_0(repo, capsys):
