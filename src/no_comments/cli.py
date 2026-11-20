@@ -40,9 +40,7 @@ def shebang_language(path: Path) -> str | None:
 def detect_language(path: Path) -> str | None:
     if not path.is_file():
         return None
-    if path.suffix:
-        return EXTENSIONS.get(path.suffix)
-    return shebang_language(path)
+    return EXTENSIONS.get(path.suffix) or shebang_language(path)
 
 
 def load_comments(path: Path, lang: str) -> list[Comment]:
