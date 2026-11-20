@@ -13,7 +13,7 @@ clean-comments 在这个样例项目上的预期结果，范围是整个项目�
 | ledger/io.py:8 | DELETE | docstring 复述签名 |
 | ledger/io.py:19 | WORKAROUND | 手动去掉 BOM；根因是用 `utf-8` 而不是 `utf-8-sig` 打开带 BOM 的导出文件。去掉这行 hack，`test_load_bank_export` 会失败。满足范围内修复的条件，但无人值守时只写锁定测试，不改代码 |
 | ledger/report.py:3 | KEEP | 银行上传接口的条数上限，证据是 `docs/bank-api.md` |
-| ledger/report.py:11 | ENCODE | `limit <= 0` 时 `raise ValueError`，加测试 |
+| ledger/report.py:11 | ENCODE | 负数 `limit` 会让切片丢掉末尾的元素（`0` 返回空列表，不算错）；`top` 只有内部调用，写成 `assert limit >= 0`，加测试 |
 | ledger/report.py:16 | DELETE | 没有负责人、也没有链接的 TODO |
 | ledger/report.py:17 | WORKAROUND | 按内容去重会把真正相同的两笔交易合并；根因是没有交易流水号。修复要在网银后台开启 `txn_id` 列，并给 `Entry` 加字段，超出范围，写草图 |
 | ledger/report.py:19 | ENCODE | 写测试锁定对账单按日期升序 |
@@ -24,6 +24,6 @@ clean-comments 在这个样例项目上的预期结果，范围是整个项目�
 
 1. 只动注释：删掉 9 条 DELETE，把 `report.py:3` 改写成 `# KEEP: ...（docs/bank-api.md）`。`no-comments verify-strip --base HEAD` 通过，并列出被删掉的 3 个 docstring：`__init__.py` 的模块 docstring、`Entry`、`load`。
 2. 改写成代码：3 条 ENCODE。
-3. 重新设计：给两条 WORKAROUND 各写一个锁定测试，删掉注释；两份草图写进报告。
+3. 重新设计：给两条 WORKAROUND 各写一个锁定测试（已有的 `test_load_bank_export` 改个能说明锁住什么的名字也算），去掉 hack 后这两个测试都失败；删掉注释，两份草图写进报告。
 
 最后 `no-comments audit` 输出为空，代码里只剩 `report.py:3` 一条 `KEEP:` 注释。
