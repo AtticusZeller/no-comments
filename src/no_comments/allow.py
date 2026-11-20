@@ -1,7 +1,7 @@
 import re
 from collections.abc import Sequence
 
-from no_comments.langs import Comment
+from no_comments.langs import Comment, Kind
 
 COMMON_PREFIXES = ("KEEP:", "SPDX-License-Identifier:")
 PYTHON_PREFIXES = (
@@ -19,14 +19,12 @@ SHELL_PREFIXES = ("shellcheck",)
 _CODING = re.compile(r"coding[:=]")
 
 
-def body(text: str) -> str:
-    return text.lstrip("#").lstrip()
-
-
 def is_allowed(lang: str, comment: Comment, extra: Sequence[re.Pattern[str]] = ()) -> bool:
+    text = comment.body
+    if comment.kind is Kind.DOCSTRING:
+        return text.startswith("KEEP:") or any(pattern.search(text) for pattern in extra)
     if comment.line == 1 and comment.col == 1 and comment.text.startswith("#!"):
         return True
-    text = body(comment.text)
     if text.startswith(COMMON_PREFIXES):
         return True
     if lang == "python":

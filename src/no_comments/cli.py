@@ -7,7 +7,15 @@ from pathlib import Path
 
 from no_comments import report
 from no_comments.allow import is_allowed
-from no_comments.diff import GitError, added_lines, diff_range, git
+from no_comments.compare import new_comments
+from no_comments.diff import (
+    GitError,
+    base_revisions,
+    collect_changes,
+    diff_range,
+    git,
+    read_blob,
+)
 from no_comments.langs import Comment, ParseError, python, shell
 
 EXTENSIONS = {".py": "python", ".pyi": "python", ".sh": "shell", ".bash": "shell"}
@@ -52,20 +60,38 @@ def load_comments(path: Path, lang: str) -> list[Comment]:
         return []
 
 
+def previous_comments(rev: str, path: str, lang: str) -> list[Comment]:
+    source = read_blob(rev, path)
+    if source is None:
+        return []
+    try:
+        return EXTRACTORS[lang](source)
+    except ParseError:
+        return []
+
+
 def run_check(files: Sequence[str], extra: Sequence[re.Pattern[str]]) -> int:
     refs = diff_range()
+    changes = collect_changes(refs)
+    bases: list[str] | None = None
     violations: list[tuple[str, Comment]] = []
     for name in files:
-        lang = detect_language(Path(name))
-        if lang is None:
+        path = Path(name)
+        lang = detect_language(path)
+        change = changes.get(os.path.normpath(name))
+        if lang is None or change is None or not change.added:
             continue
-        lines = added_lines(name, refs)
-        if not lines:
+        current = load_comments(path, lang)
+        if not current:
             continue
+        if bases is None:
+            bases = base_revisions(refs)
+        old_path = change.old_path
+        previous = [previous_comments(rev, old_path, lang) for rev in bases] if old_path else []
         violations += [
             (name, c)
-            for c in load_comments(Path(name), lang)
-            if c.line in lines and not is_allowed(lang, c, extra)
+            for c in new_comments(current, previous, change.added)
+            if not is_allowed(lang, c, extra)
         ]
     if not violations:
         return 0
@@ -82,13 +108,13 @@ def audit_files(paths: Sequence[str]) -> list[str]:
     return [p for p in paths if not Path(p).is_dir()] + listed
 
 
-def run_audit(paths: Sequence[str]) -> int:
+def run_audit(paths: Sequence[str], extra: Sequence[re.Pattern[str]]) -> int:
     for name in audit_files(paths):
         lang = detect_language(Path(name))
         if lang is None:
             continue
         report.print_violations(
-            (name, c) for c in load_comments(Path(name), lang) if not is_allowed(lang, c)
+            (name, c) for c in load_comments(Path(name), lang) if not is_allowed(lang, c, extra)
         )
     return 0
 
@@ -101,12 +127,13 @@ def regex(value: str) -> re.Pattern[str]:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--allow", action="append", type=regex, default=[], metavar="REGEX")
     parser = argparse.ArgumentParser(prog="no-comments")
     sub = parser.add_subparsers(dest="command", required=True)
-    check = sub.add_parser("check", help="report comments on added lines")
-    check.add_argument("--allow", action="append", type=regex, default=[], metavar="REGEX")
+    check = sub.add_parser("check", parents=[common], help="report comments on added lines")
     check.add_argument("files", nargs="*", metavar="FILE")
-    audit = sub.add_parser("audit", help="list every comment in the given paths")
+    audit = sub.add_parser("audit", parents=[common], help="list every comment in the given paths")
     audit.add_argument("paths", nargs="*", metavar="PATH")
     return parser
 
@@ -116,7 +143,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.command == "check":
             return run_check(args.files, args.allow)
-        return run_audit(args.paths)
+        return run_audit(args.paths, args.allow)
     except GitError as exc:
         print(f"no-comments: error: {exc}", file=sys.stderr)
         return 2

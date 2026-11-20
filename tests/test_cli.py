@@ -126,7 +126,6 @@ def test_range_mode_on_diverged_branches(repo, capsys, monkeypatch):
     assert "main note" not in out
 
 
-@pytest.mark.xfail(strict=True, reason="needs merge-aware comparison from #3")
 def test_merge_conflict_resolution_keeps_incoming_comments(repo, capsys):
     repo.write("a.py", "x = 1\n")
     base = repo.commit()
@@ -267,3 +266,107 @@ def test_installed_hook_blocks_commit(repo, pre_commit_home):
         ["git", "commit", "-m", "add"], cwd=repo.root, capture_output=True, text=True
     )
     assert passed.returncode == 0, passed.stdout + passed.stderr
+
+
+def test_audit_allow_option(repo, capsys):
+    repo.write("a.py", "# TODO(bob): later\n# other\n")
+    assert main(["audit", "--allow", r"^TODO\(", "a.py"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "a.py:2:1: NC001 comment not allowed: # other",
+    ]
+
+
+FUNC = "def f():\n    # explain f\n    return 1\n\n\ndef g():\n    return 2\n"
+
+
+def test_rename_without_changes_passes(repo):
+    repo.write("old.py", FUNC)
+    repo.commit()
+    repo.git("mv", "old.py", "new.py")
+    assert main(["check", "new.py"]) == 0
+
+
+def test_rename_reports_only_the_added_comment(repo, capsys):
+    repo.write("old.py", FUNC)
+    repo.commit()
+    repo.git("mv", "old.py", "new.py")
+    repo.stage("new.py", FUNC + "\n\n# added\n")
+    assert main(["check", "new.py"]) == 1
+    out = [s for s in capsys.readouterr().out.splitlines() if "NC00" in s]
+    assert out == ["new.py:10:1: NC001 comment not allowed: # added"]
+
+
+def test_rename_where_git_sees_new_file_still_compares_whole_file(repo):
+    repo.write("old.py", "# one\n")
+    repo.commit()
+    repo.git("mv", "old.py", "new.py")
+    repo.stage("new.py", "# one\nx = 1\n")
+    assert main(["check", "new.py"]) == 0
+
+
+def test_changing_code_before_trailing_comment_passes(repo):
+    repo.write("a.py", "x = 1  # note\n")
+    repo.commit()
+    repo.stage("a.py", "x = 2  # note\n")
+    assert main(["check", "a.py"]) == 0
+
+
+def test_changing_trailing_comment_text_is_reported(repo, capsys):
+    repo.write("a.py", "x = 1  # note\n")
+    repo.commit()
+    repo.stage("a.py", "x = 1  # other\n")
+    assert main(["check", "a.py"]) == 1
+    assert "a.py:1:8: NC001 comment not allowed: # other" in capsys.readouterr().out
+
+
+def test_moving_a_commented_function_passes(repo):
+    repo.write("a.py", FUNC)
+    repo.commit()
+    moved = "def g():\n    return 2\n\n\ndef f():\n    # explain f\n    return 1\n"
+    repo.stage("a.py", moved)
+    assert main(["check", "a.py"]) == 0
+
+
+def test_duplicate_of_existing_comment_text_is_reported(repo, capsys):
+    repo.write("a.py", "# same\nx = 1\n")
+    repo.commit()
+    repo.stage("a.py", "# same\nx = 1\n# same\ny = 2\n")
+    assert main(["check", "a.py"]) == 1
+    out = [s for s in capsys.readouterr().out.splitlines() if "NC00" in s]
+    assert out == ["a.py:3:1: NC001 comment not allowed: # same"]
+
+
+def test_identical_text_replacing_a_removed_comment_is_not_reported(repo):
+    repo.write("a.py", "# same\nx = 1\ny = 2\n")
+    repo.commit()
+    repo.stage("a.py", "x = 1\ny = 2\n# same\n")
+    assert main(["check", "a.py"]) == 0
+
+
+def test_range_mode_rename(repo, capsys, monkeypatch):
+    repo.write("old.py", FUNC)
+    start = repo.commit()
+    repo.git("mv", "old.py", "new.py")
+    repo.write("new.py", FUNC + "\n\n# added in range\n")
+    end = repo.commit()
+    monkeypatch.setenv("PRE_COMMIT_FROM_REF", start)
+    monkeypatch.setenv("PRE_COMMIT_TO_REF", end)
+    assert main(["check", "new.py"]) == 1
+    out = [s for s in capsys.readouterr().out.splitlines() if "NC00" in s]
+    assert out == ["new.py:10:1: NC001 comment not allowed: # added in range"]
+
+
+def test_comment_written_while_resolving_merge_is_reported(repo, capsys):
+    repo.write("a.py", "x = 1\n")
+    base = repo.commit()
+    repo.git("checkout", "-q", "-b", "feature", base)
+    repo.write("a.py", "x = 2\n# from feature\n")
+    repo.commit()
+    repo.git("checkout", "-q", "main")
+    repo.write("a.py", "x = 3\n")
+    repo.commit()
+    subprocess.run(["git", "merge", "feature"], cwd=repo.root, capture_output=True)
+    repo.stage("a.py", "x = 3\n# from feature\n# while resolving\n")
+    assert main(["check", "a.py"]) == 1
+    out = [s for s in capsys.readouterr().out.splitlines() if "NC00" in s]
+    assert out == ["a.py:3:1: NC001 comment not allowed: # while resolving"]

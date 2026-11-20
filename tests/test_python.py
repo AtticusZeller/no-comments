@@ -5,7 +5,7 @@ import pytest
 
 from no_comments.allow import is_allowed
 from no_comments.cli import main
-from no_comments.langs import Comment, ParseError
+from no_comments.langs import Comment, Kind, ParseError
 from no_comments.langs.python import extract
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -138,3 +138,97 @@ def test_syntax_error_does_not_mask_other_violations(repo, capsys):
     repo.stage("bad.py", 'x = """oops\n')
     repo.stage("c.py", "# c\n")
     assert main(["check", "bad.py", "c.py"]) == 1
+
+
+DOCSTRINGS = '''\
+"""Module doc."""
+
+
+class A:
+    """Class doc."""
+
+    def m(self):
+        """Method doc."""
+        x = 1
+        """Pretend comment."""
+        return x
+
+
+async def run():
+    """Async doc."""
+'''
+
+
+def test_extract_docstrings():
+    docs = [c for c in extract(DOCSTRINGS) if c.kind is Kind.DOCSTRING]
+    assert [(c.line, c.col, c.body) for c in docs] == [
+        (1, 1, "Module doc."),
+        (5, 5, "Class doc."),
+        (8, 9, "Method doc."),
+        (10, 9, "Pretend comment."),
+        (15, 5, "Async doc."),
+    ]
+
+
+def test_new_docstrings_are_reported(repo, capsys):
+    repo.stage("a.py", DOCSTRINGS)
+    assert main(["check", "a.py"]) == 1
+    out = [s for s in capsys.readouterr().out.splitlines() if "NC00" in s]
+    assert out == [
+        'a.py:1:1: NC002 docstring not allowed: """Module doc."""',
+        'a.py:5:5: NC002 docstring not allowed: """Class doc."""',
+        'a.py:8:9: NC002 docstring not allowed: """Method doc."""',
+        'a.py:10:9: NC002 docstring not allowed: """Pretend comment."""',
+        'a.py:15:5: NC002 docstring not allowed: """Async doc."""',
+    ]
+
+
+def test_strings_that_are_not_statements_are_ignored():
+    source = 'x = """text"""\nf"standalone {x}"\nb"bytes"\nprint("""arg""")\n'
+    assert [c for c in extract(source) if c.kind is Kind.DOCSTRING] == []
+
+
+def test_keep_docstring_is_allowed(repo):
+    repo.stage("a.py", 'def f():\n    """\n    KEEP: 下游解析器依赖这段文本\n    """\n')
+    assert main(["check", "a.py"]) == 0
+
+
+def test_allow_option_applies_to_docstrings(repo):
+    repo.stage("a.py", '"""Usage: tool [ARGS]"""\n')
+    assert main(["check", "--allow", "^Usage:", "a.py"]) == 0
+
+
+def test_multiline_docstring_reported_when_any_line_is_added(repo, capsys):
+    repo.write("a.py", 'def f():\n    """First.\n\n    Old detail.\n    """\n')
+    repo.commit()
+    repo.stage("a.py", 'def f():\n    """First.\n\n    New detail.\n    """\n')
+    assert main(["check", "a.py"]) == 1
+    assert 'a.py:2:5: NC002 docstring not allowed: """First.' in capsys.readouterr().out
+
+
+def test_unchanged_docstring_with_changed_body_passes(repo):
+    repo.write("a.py", 'def f():\n    """Doc."""\n    return 1\n')
+    repo.commit()
+    repo.stage("a.py", 'def f():\n    """Doc."""\n    return 2\n')
+    assert main(["check", "a.py"]) == 0
+
+
+def test_reindented_docstring_passes(repo):
+    repo.write("a.py", 'def f():\n    """Doc.\n\n    More.\n    """\n')
+    repo.commit()
+    repo.stage(
+        "a.py", 'class A:\n    def f(self):\n        """Doc.\n\n        More.\n        """\n'
+    )
+    assert main(["check", "a.py"]) == 0
+
+
+def test_audit_lists_docstrings(repo, capsys):
+    repo.write("a.py", 'def f():\n    """Doc."""\n')
+    assert main(["audit", "a.py"]) == 0
+    assert capsys.readouterr().out == 'a.py:2:5: NC002 docstring not allowed: """Doc."""\n'
+
+
+def test_ast_syntax_error_warns_and_skips(repo, capsys):
+    repo.stage("bad.py", "def f(:\n    pass\n# c\n")
+    assert main(["check", "bad.py"]) == 0
+    assert "bad.py" in capsys.readouterr().err
