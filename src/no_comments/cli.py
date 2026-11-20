@@ -111,7 +111,7 @@ def run_check(files: Sequence[str], extra: Sequence[re.Pattern[str]]) -> int:
     if not violations:
         return 0
     report.print_violations(violations)
-    report.print_hint()
+    report.print_hint(violations)
     return 1
 
 
@@ -129,7 +129,7 @@ def run_audit(paths: Sequence[str], extra: Sequence[re.Pattern[str]]) -> int:
         if lang is None:
             continue
         report.print_violations(
-            (name, c) for c in load_comments(Path(name), lang) if not is_allowed(lang, c, extra)
+            [(name, c) for c in load_comments(Path(name), lang) if not is_allowed(lang, c, extra)]
         )
     return 0
 
