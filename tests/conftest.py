@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pytest
 
+collect_ignore = ["fixtures"]
+
 
 class Repo:
     def __init__(self, root: Path) -> None:

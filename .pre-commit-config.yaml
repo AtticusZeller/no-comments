@@ -6,3 +6,4 @@ repos:
         entry: uv run --frozen no-comments check
         language: system
         types_or: [python, pyi, shell]
+        exclude: ^tests/fixtures/cleanup/

@@ -170,9 +170,16 @@ def test_audit_lists_all_comments_and_exits_0(repo, capsys):
 
 def test_repository_source_has_no_comments(monkeypatch, capsys):
     monkeypatch.chdir(ROOT)
-    dirs = ("src", "tests", "scripts")
-    files = [str(p.relative_to(ROOT)) for d in dirs for p in (ROOT / d).rglob("*.py")]
-    files += [str(p.relative_to(ROOT)) for p in (ROOT / "tests").rglob("*.sh")]
+    sample = ROOT / "tests" / "fixtures" / "cleanup"
+    paths = [
+        p
+        for d in ("src", "tests", "scripts", "skills")
+        for pattern in ("*.py", "*.sh")
+        for p in (ROOT / d).rglob(pattern)
+        if sample not in p.parents
+    ]
+    assert any(p.suffix == ".sh" and "skills" in p.parts for p in paths)
+    files = [str(p.relative_to(ROOT)) for p in paths]
     assert main(["audit", *files]) == 0
     assert capsys.readouterr().out == ""
 
@@ -433,7 +440,7 @@ def test_ty_directives_pass_and_narrative_after_them_is_reported(repo, capsys):
     repo.stage(
         "a.py",
         "# ty: ignore[invalid-argument-type]\n\n"
-        "x = 10 + \"x\"  # ty: ignore[unsupported-operator]\n"
+        'x = 10 + "x"  # ty: ignore[unsupported-operator]\n'
         "y = f()  # ty: ignore[call-non-callable]  # 修复 bug\n"
         "z = g()  # ty: ignore #修复\n",
     )

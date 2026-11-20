@@ -8,6 +8,7 @@ from pathlib import Path
 from no_comments import report
 from no_comments.allow import is_allowed
 from no_comments.compare import Pool, new_comments, pool
+from no_comments.detect import EXTENSIONS, detect_language, shebang_language
 from no_comments.diff import (
     GitError,
     base_revisions,
@@ -17,39 +18,12 @@ from no_comments.diff import (
     read_blobs,
 )
 from no_comments.langs import Comment, ParseError, python, shell
+from no_comments.strip import run_verify_strip
 
-EXTENSIONS = {".py": "python", ".pyi": "python", ".sh": "shell", ".bash": "shell"}
-SHELL_INTERPRETERS = {"sh", "bash", "dash", "ksh", "ash"}
 EXTRACTORS: dict[str, Callable[[str], list[Comment]]] = {
     "python": python.extract,
     "shell": shell.extract,
 }
-_PYTHON_INTERPRETER = re.compile(r"python[0-9.]*")
-
-
-def shebang_language(first_line: bytes) -> str | None:
-    if not first_line.startswith(b"#!"):
-        return None
-    words = first_line[2:].decode("utf-8", "replace").split()
-    if words and os.path.basename(words[0]) == "env":
-        words = [w for w in words[1:] if not w.startswith("-") and "=" not in w]
-    if not words:
-        return None
-    interpreter = os.path.basename(words[0])
-    if _PYTHON_INTERPRETER.fullmatch(interpreter):
-        return "python"
-    if interpreter in SHELL_INTERPRETERS:
-        return "shell"
-    return None
-
-
-def detect_language(path: Path) -> str | None:
-    if not path.is_file():
-        return None
-    if path.suffix in EXTENSIONS:
-        return EXTENSIONS[path.suffix]
-    with path.open("rb") as handle:
-        return shebang_language(handle.readline(512))
 
 
 def is_supported(name: str) -> bool:
@@ -150,6 +124,11 @@ def build_parser() -> argparse.ArgumentParser:
     check.add_argument("files", nargs="*", metavar="FILE")
     audit = sub.add_parser("audit", parents=[common], help="list every comment in the given paths")
     audit.add_argument("paths", nargs="*", metavar="PATH")
+    strip = sub.add_parser(
+        "verify-strip", help="fail if the working tree differs from REF beyond comments"
+    )
+    strip.add_argument("--base", default="HEAD", metavar="REF")
+    strip.add_argument("files", nargs="*", metavar="FILE")
     return parser
 
 
@@ -158,7 +137,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.command == "check":
             return run_check(args.files, args.allow)
+        if args.command == "verify-strip":
+            return run_verify_strip(args.base, args.files)
         return run_audit(args.paths, args.allow)
-    except GitError as exc:
+    except (GitError, ParseError, OSError) as exc:
         print(f"no-comments: error: {exc}", file=sys.stderr)
         return 2
