@@ -41,6 +41,8 @@ def test_syntax_error_raises_parse_error():
         (5, "# type: ignore"),
         (5, "# pyright: ignore[reportGeneralTypeIssues]"),
         (5, "# mypy: disable-error-code=misc"),
+        (5, "# ty: ignore[unsupported-operator]"),
+        (1, "# ty: ignore[invalid-argument-type]"),
         (5, "# pragma: no cover"),
         (5, "# fmt: off"),
         (5, "# isort: skip"),
@@ -63,6 +65,8 @@ def test_default_allowed(line, text):
         (3, 1, "# -*- coding: utf-8 -*-"),
         (5, 1, "# shellcheck disable=SC2086"),
         (5, 1, "# keep: lowercase is not the marker"),
+        (5, 1, "# ty: ignore #修复"),
+        (5, 1, "# tyre pressure"),
     ],
 )
 def test_not_allowed(line, col, text):

@@ -429,6 +429,22 @@ def test_narrative_after_pragma_is_reported(repo, capsys):
     ]
 
 
+def test_ty_directives_pass_and_narrative_after_them_is_reported(repo, capsys):
+    repo.stage(
+        "a.py",
+        "# ty: ignore[invalid-argument-type]\n\n"
+        "x = 10 + \"x\"  # ty: ignore[unsupported-operator]\n"
+        "y = f()  # ty: ignore[call-non-callable]  # 修复 bug\n"
+        "z = g()  # ty: ignore #修复\n",
+    )
+    assert main(["check", "a.py"]) == 1
+    out = [s for s in capsys.readouterr().out.splitlines() if "NC00" in s]
+    assert out == [
+        "a.py:4:43: NC001 comment not allowed: # 修复 bug",
+        "a.py:5:10: NC001 comment not allowed: # ty: ignore #修复",
+    ]
+
+
 def test_dropping_pragma_before_existing_note_passes(repo):
     repo.write("a.py", "ok = isinstance(x, str)  # type: ignore[misc]  # runtime guard\n")
     repo.commit()

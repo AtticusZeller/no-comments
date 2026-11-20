@@ -52,6 +52,7 @@ repos:
 | Python | `noqa` |
 | Python | `type:` |
 | Python | `pyright:` |
+| Python | `ty:` |
 | Python | `mypy:` |
 | Python | `pragma:` |
 | Python | `fmt:` |
