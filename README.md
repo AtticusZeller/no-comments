@@ -97,6 +97,21 @@ no-comments audit                      # 不给路径时检查 git ls-files 的�
 no-comments audit --allow '^TODO\(' .  # 和 check 用同一套放行规则
 ```
 
+### 清理存量注释
+
+hook 只拦新增的注释，已有的注释和 docstring 交给 `clean-comments` skill 清理：逐条核实，然后删除、改写成代码、保留为 `KEEP:`，或修掉注释所辩护的临时方案。两者的判断标准都是本文的「规则」一节。
+
+```sh
+uv tool install git+https://github.com/AtticusZeller/no-comments@v0.4.1
+npx skills add AtticusZeller/no-comments --skill clean-comments
+```
+
+skill 的第一次提交只删注释，用 `verify-strip` 证明没改到代码。它比较 `--base`（默认 `HEAD`）和工作区；不给文件时检查两者之间有改动的全部 Python、Shell 文件。退出码 `0` 表示只有注释和 docstring 不同，`1` 表示有代码改动并列出文件，`2` 表示出错。删掉的 docstring 会单独列出，因为 typer、click、FastAPI 这类框架可能读取 `__doc__`。
+
+```sh
+no-comments verify-strip --base HEAD
+```
+
 ### 排除目录和框架帮助文本
 
 工具本身没有配置文件，排除目录用 pre-commit 自带的 `exclude`，比如在 hook 下写 `exclude: ^(vendor|migrations)/`。发布给外部用户的库，如果公共 API 确实需要文档，同样用 `exclude` 排除对应目录。typer、FastAPI 这类框架会读取 docstring 作为帮助文本，改成显式传入 `help=`、`description=`。

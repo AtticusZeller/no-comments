@@ -8,7 +8,9 @@
 
 | 模块 | 职责 |
 | --- | --- |
-| `cli.py` | 解析参数，按扩展名或 shebang 判断语言，串起 `check` 和 `audit` 的流程，决定退出码 |
+| `cli.py` | 解析参数，串起 `check`、`audit`、`verify-strip` 的流程，决定退出码 |
+| `detect.py` | 按扩展名或 shebang 判断语言 |
+| `strip.py` | `verify-strip`：判断工作区相对 base 是否只改了注释和 docstring |
 | `diff.py` | 调用 git：列出改动文件，解析新增行号和旧路径，确定旧版本 ref，批量读取旧版本内容 |
 | `compare.py` | 按文本出现次数比较整个改动的新旧版本，选出新增的注释 |
 | `allow.py` | 默认放行规则和 `--allow` |
@@ -45,6 +47,25 @@
 - 任何一步解析失败，都给出警告并跳过整个文件，不影响退出码。旧版本解析失败时，按旧版本为空处理。
 - 不做自动修复，不支持配置文件；要排除路径，用 pre-commit 的 `exclude`。
 
+### verify-strip
+
+`verify-strip` 读取 base 版本（`git cat-file`）和工作区版本，两边做同样的去注释处理后比较，复用 hook 的解析方式，不另写一套：
+
+- Python：`ast.parse` 后去掉所有单独成句的字符串，以及 `pass` 和单独的 `...`，再比较 `ast.dump`。`ast` 本身不含注释；去掉 `pass` 和 `...` 是因为删掉唯一的 docstring 后要补一个占位语句。删掉的 docstring 按「所属的类或函数名」比对两边，列成提示。
+- Shell：用 `langs/shell.py` 找到注释片段，按行列删掉，再去掉行尾空白和空行，逐行比较。
+- 文件一侧不存在时按空文件处理，所以新增或删除含代码的文件算代码改动。改名用 `--no-renames` 拆成删除和新增。
+
+### clean-comments skill
+
+`skills/clean-comments/` 按 [skills](https://github.com/vercel-labs/skills) 的目录约定组织，`npx skills add . --list` 能列出：
+
+- `SKILL.md`：触发描述和八步流程。
+- `references/reviewer.md`、`references/investigate.md`：审查子 agent 的 prompt，原样拼接后交给子 agent。
+- `references/encodings.md`：约束到代码的对照表。`references/redesign.md`：WORKAROUND 的处理和草图模板。
+- `scripts/evidence.sh`：收集一段代码的 blame、`git log -L` 和 PR 描述，只依赖 git，`gh` 可选。
+
+`tests/fixtures/cleanup/` 是效果样例：一个小项目，四类判定都有，预期结果写在 `expected.md`。`tests/test_skill.py` 检查 `expected.md` 覆盖了样例里的每一条注释、样例的测试能通过、去掉 BOM 那条 workaround 会让测试失败；判定本身要人工跑 skill 对比。这个目录故意带注释，pytest 收集、本仓库的 hook 和自检测试都排除了它。
+
 ## 开发
 
 ```sh
@@ -65,7 +86,8 @@ pre-commit install
 - 运行依赖只有 `tree-sitter` 和 `tree-sitter-bash`。由 `tests/test_docs.py` 强制。
 - 改放行规则时，同时改 `allow.py`、README 的放行表和对应测试。由 `tests/test_docs.py` 强制两边一致。
 - 改规则编号时，同时改 `report.CODES` 和 README。由 `tests/test_docs.py` 强制。
-- 新增语言时：在 `langs/` 下加一个模块实现 `extract(source: str) -> list[Comment]`，再更新 `cli.EXTENSIONS`、`.pre-commit-hooks.yaml` 里的 `types_or`、README 中支持的语言，并补测试。靠评审保证。
+- 新增语言时：在 `langs/` 下加一个模块实现 `extract(source: str) -> list[Comment]`，再更新 `detect.EXTENSIONS`、`.pre-commit-hooks.yaml` 里的 `types_or`、README 中支持的语言，并补测试。靠评审保证。
+- 改 README「规则」一节时，同步检查 `skills/clean-comments/references/reviewer.md` 和 `encodings.md` 是否要跟着改。改了 `references/` 下的文件，按 `tests/fixtures/cleanup/expected.md` 人工跑一遍样例。靠评审保证。
 - 不实现 issue 以外的功能；遇到需要决定的分歧，开 issue 记录，不自行扩展范围。靠评审保证。
 
 ## 文档维护
