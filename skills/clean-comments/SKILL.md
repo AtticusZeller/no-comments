@@ -25,7 +25,7 @@ no-comments hook 拦住新增的注释，这个 skill 清理已有的注释和 d
 
 ## 2. 审查
 
-每一批新开一个只读子 agent，prompt 由三部分拼成：`references/reviewer.md` 全文、`references/investigate.md` 全文、这一批的 audit 输出。
+每一批新开一个只读子 agent，prompt 依次拼接：`references/reviewer.md` 全文、`references/investigate.md` 全文、仓库根目录和本 skill 目录的绝对路径（子 agent 要用其中的 `scripts/evidence.sh`）、这一批的 audit 输出。
 
 - Claude Code 用 Agent 工具，类型 `general-purpose`。Codex 用 `spawn_agent`。
 - 没有子 agent 能力的环境（比如没装扩展的 Pi）：自己按这份 prompt 重新审一遍，审查时只读不改。
