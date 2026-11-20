@@ -20,7 +20,6 @@ jobs:
       - uses: astral-sh/setup-uv@v10.3.3
         with:
           python-version: ${{ matrix.python }}
-      - run: uv tool install pre-commit
       - run: uv run --frozen pytest -q
 
   pre-commit:
