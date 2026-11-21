@@ -102,9 +102,10 @@ no-comments audit --allow '^TODO\(' .  # 和 check 用同一套放行规则
 hook 只拦新增的注释，已有的注释和 docstring 交给 `clean-comments` skill 清理：逐条核实，然后删除、改写成代码、保留为 `KEEP:`，或修掉注释所辩护的临时方案。两者的判断标准都是本文的「规则」一节。
 
 ```sh
-uv tool install git+https://github.com/AtticusZeller/no-comments@v0.5.0
 npx skills add AtticusZeller/no-comments --skill clean-comments
 ```
+
+skill 需要本机有 uv，它用 uvx 自动获取和自己同版本的 CLI，不用另外安装。
 
 skill 的第一次提交只删注释，用 `verify-strip` 证明没改到代码。它比较 `--base`（默认 `HEAD`）和工作区；不给文件时检查两者之间有改动的全部 Python、Shell 文件。退出码 `0` 表示只有注释和 docstring 不同，`1` 表示有代码改动并列出文件，`2` 表示出错。删掉的 docstring 会单独列出，因为 typer、click、FastAPI 这类框架可能读取 `__doc__`。
 
