@@ -99,7 +99,7 @@ no-comments audit --allow '^TODO\(' .  # 和 check 用同一套放行规则
 
 ### 清理存量注释
 
-hook 只拦新增的注释，已有的注释和 docstring 交给 `clean-comments` skill 清理：逐条核实，然后删除、改写成代码、保留为 `KEEP:`，或修掉注释所辩护的临时方案。两者的判断标准都是本文的「规则」一节。
+hook 只拦新增的注释，已有的注释和 docstring 交给 `clean-comments` skill 清理：逐条核实，然后删除、改写成代码、保留为 `KEEP:`，或修掉注释所辩护的临时方案。两者的判断标准都是本文的「规则」一节。仓库还没接入 hook 时，skill 会在清理分支的第一个提交里加上。
 
 ```sh
 npx skills add AtticusZeller/no-comments --skill clean-comments

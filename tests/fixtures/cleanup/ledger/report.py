@@ -9,6 +9,7 @@ def batches(entries: list[Entry]) -> list[list[Entry]]:
 
 def top(entries: list[Entry], limit: int) -> list[Entry]:
     # limit 必须是正数，传 0 或负数时切片结果是错的
+    # 按金额从大到小排，调用方把第一条当作最大的一笔
     return sorted(entries, key=lambda e: e.amount, reverse=True)[:limit]
 
 
