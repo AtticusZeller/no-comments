@@ -16,6 +16,10 @@ SKILL = SKILLS / "clean-comments"
 EVIDENCE = SKILL / "scripts" / "evidence.sh"
 SAMPLE = ROOT / "tests" / "fixtures" / "cleanup"
 README = (ROOT / "README.md").read_text(encoding="utf-8")
+SKILL_MD = (SKILL / "SKILL.md").read_text(encoding="utf-8")
+PYPROJECT = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+VERSION = re.search(r'^version = "([^"]+)"$', PYPROJECT, re.M).group(1)
+UVX = shutil.which("uvx")
 
 
 def frontmatter(path: Path) -> dict:
@@ -46,6 +50,26 @@ def test_readme_install_command_matches_skill_dirs():
     names = re.findall(r"npx skills add AtticusZeller/no-comments --skill (\S+)", README)
     assert names
     assert set(names) == {p.parent.name for p in SKILLS.glob("*/SKILL.md")}
+
+
+def test_skill_pins_cli_to_repository_version():
+    pin = r"uvx --from git\+https://github\.com/AtticusZeller/no-comments@v(\S+) no-comments"
+    pins = re.findall(pin, SKILL_MD)
+    assert pins == [VERSION]
+    assert "uv tool install" not in SKILL_MD
+
+
+@pytest.mark.skipif(UVX is None and not os.environ.get("CI"), reason="needs uvx on PATH")
+def test_uvx_runs_cli_from_repository():
+    assert UVX is not None, "uvx must be on PATH in CI"
+    result = subprocess.run(
+        [UVX, "--no-cache", "--from", str(ROOT), "no-comments", "--help"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "verify-strip" in result.stdout
 
 
 def test_evidence_script_without_gh(repo, tmp_path):

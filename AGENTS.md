@@ -59,7 +59,7 @@
 
 `skills/clean-comments/` 按 [skills](https://github.com/vercel-labs/skills) 的目录约定组织，`npx skills add . --list` 能列出：
 
-- `SKILL.md`：触发描述和八步流程。
+- `SKILL.md`：触发描述和八步流程。CLI 通过 `uvx --from git+https://github.com/AtticusZeller/no-comments@vX.Y.Z no-comments` 调用，版本写死为本仓库当前版本，用户不用单独安装，skill 和 CLI 也不会版本错配。
 - `references/reviewer.md`、`references/investigate.md`：审查子 agent 的 prompt，原样拼接后交给子 agent。
 - `references/encodings.md`：约束到代码的对照表。`references/redesign.md`：WORKAROUND 的处理和草图模板。
 - `scripts/evidence.sh`：收集一段代码的 blame、`git log -L` 和 PR 描述，只依赖 git，`gh` 可选。
@@ -88,6 +88,7 @@ pre-commit install
 - 改规则编号时，同时改 `report.CODES` 和 README。由 `tests/test_docs.py` 强制。
 - 新增语言时：在 `langs/` 下加一个模块实现 `extract(source: str) -> list[Comment]`，再更新 `detect.EXTENSIONS`、`.pre-commit-hooks.yaml` 里的 `types_or`、README 中支持的语言，并补测试。靠评审保证。
 - 改 README「规则」一节时，同步检查 `skills/clean-comments/references/reviewer.md` 和 `encodings.md` 是否要跟着改。改了 `references/` 下的文件，按 `tests/fixtures/cleanup/expected.md` 人工跑一遍样例。靠评审保证。
+- skill 用到了 CLI 的新功能时，必须在同一个 PR 里升版本号，合并后马上打 tag：`main` 上的 skill 会立即被 `npx skills add` 拉到，它写死的版本必须已经存在。靠评审保证。
 - 不实现 issue 以外的功能；遇到需要决定的分歧，开 issue 记录，不自行扩展范围。靠评审保证。
 
 ## 文档维护
@@ -110,5 +111,5 @@ uv run python scripts/replay.py --commits 200 --out /tmp/replay <本地仓库路
 
 1. 在这些公开仓库的完整克隆上回放，`mismatch`、`exit2`、`warning`、`slow` 都为 0，或者每一项都有对应 issue：AtticusZeller/sing-box-cli、psf/requests、pallets/click、fastapi/typer、nvm-sh/nvm、acmesh-official/acme.sh。维护者自己的私有仓库在本地回放，结果不进仓库。
 2. 改 `pyproject.toml` 里的 `version`，然后运行 `uv lock`。
-3. 改 README 里 `rev:` 和 `uv tool install ...@v` 中的版本号。`tests/test_docs.py` 检查这两处和 `version` 一致。
+3. 改 README 里 `rev:` 和 `uv tool install ...@v` 中的版本号，以及 `skills/clean-comments/SKILL.md` 里 `uvx --from ...@v` 的版本号。`tests/test_docs.py` 和 `tests/test_skill.py` 检查这几处和 `version` 一致。
 4. 合并到 `main` 后，打标签并推送：`git tag -a vX.Y.Z -m vX.Y.Z && git push origin vX.Y.Z`。
