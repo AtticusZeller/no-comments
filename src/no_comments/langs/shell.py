@@ -30,8 +30,14 @@ def separator_start(prefix: str) -> int:
 
 def statement_starts(source: str) -> dict[int, int]:
     root = _PARSER.parse(source.encode("utf-8")).root_node
-    starts = {}
-    for comment in _comment_nodes(root):
+    comments = _comment_nodes(root)
+    comment_rows = {comment.start_point.row for comment in comments}
+    continuations: dict[int, int] = {}
+    for row, line in enumerate(source.split("\n")):
+        if row not in comment_rows and ends_with_escape(line):
+            continuations[row + 1] = continuations.get(row, row)
+    starts = dict(continuations)
+    for comment in comments:
         row = comment.start_point.row
         parent = comment.parent
         outer = parent.parent if parent is not None else None
@@ -41,13 +47,15 @@ def statement_starts(source: str) -> dict[int, int]:
             and outer is not None
             and outer.type == "redirected_statement"
         ):
-            starts[row] = outer.start_point.row
+            starts[row] = continuations.get(outer.start_point.row, outer.start_point.row)
             continue
         prior = comment.prev_named_sibling
+        target = row
         if prior is not None and prior.type != "comment" and prior.end_point.row == row:
-            starts[row] = prior.start_point.row
+            target = prior.start_point.row
         elif parent is not None and parent != root:
-            starts[row] = parent.start_point.row
+            target = parent.start_point.row
+        starts[row] = continuations.get(target, target)
     return starts
 
 
@@ -63,7 +71,7 @@ def code_lines(source: str) -> list[str]:
     for row, raw in enumerate(lines):
         raw_line = raw[: comment_cols.get(row)].decode("utf-8")
         line = raw_line.removesuffix("\r")
-        if line.strip() or continued:
+        if line.strip(" \t") or continued:
             code.append(line[: separator_start(line)])
         continued = row not in comment_cols and ends_with_escape(raw_line)
     return code

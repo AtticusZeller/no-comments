@@ -1,4 +1,5 @@
 import ast
+import codecs
 import os
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -67,8 +68,8 @@ def changed_header(before: bytes, after: bytes, lang: str) -> str | None:
     return None
 
 
-def _shebang_language(source: str) -> str | None:
-    return shebang_language(source.split("\n", 1)[0].encode("utf-8"))
+def _shebang_language(data: bytes | None) -> str | None:
+    return shebang_language((data or b"").removeprefix(codecs.BOM_UTF8).split(b"\n", 1)[0])
 
 
 def _decode(data: bytes | None, label: str) -> str:
@@ -89,7 +90,7 @@ def _base_blob(base: str, path: str) -> bytes | None:
     return _git_bytes("cat-file", "blob", f"{base}:{path}")
 
 
-def _language(path: str, base_source: str, work_source: str) -> str | None:
+def _language(path: str, base_source: bytes | None, work_source: bytes | None) -> str | None:
     suffix = Path(path).suffix
     if suffix in EXTENSIONS:
         return EXTENSIONS[suffix]
@@ -123,12 +124,17 @@ def verify(base: str, files: Sequence[str]) -> StripReport:
         disk = root / path
         work_bytes = disk.read_bytes() if disk.is_file() else None
         base_bytes = _base_blob(base, path)
-        base_source = _decode(base_bytes, f"{path} ({base})")
-        work_source = _decode(work_bytes, path)
-        lang = _language(path, base_source, work_source)
-        if lang is None or base_bytes == work_bytes:
+        lang = _language(path, base_bytes, work_bytes)
+        if lang is None:
             continue
         try:
+            if lang == "python":
+                python.require_utf8(base_bytes or b"")
+                python.require_utf8(work_bytes or b"")
+            base_source = _decode(base_bytes, f"{path} ({base})")
+            work_source = _decode(work_bytes, path)
+            if base_bytes == work_bytes:
+                continue
             if changed_header(base_bytes or b"", work_bytes or b"", lang):
                 report.changed.append(path)
                 continue

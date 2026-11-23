@@ -42,7 +42,10 @@ def parse(source: str, lang: str) -> list[Comment]:
 
 def load_comments(path: Path, lang: str, warn: bool = True) -> list[Comment]:
     try:
-        return parse(path.read_bytes().decode("utf-8-sig"), lang)
+        data = path.read_bytes()
+        if lang == "python":
+            python.require_utf8(data)
+        return parse(data.decode("utf-8-sig"), lang)
     except (ParseError, UnicodeDecodeError) as exc:
         if warn:
             print(f"no-comments: warning: skipping {path}: {exc}", file=sys.stderr)

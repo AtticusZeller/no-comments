@@ -98,7 +98,8 @@ def erase_segments(
         while i < len(cols) and selected[i] is not None:
             i += 1
         start = cols[first]
-        left = len(body[:start].rstrip())
+        blanks = " \t" if lang == "shell" else None
+        left = len(body[:start].rstrip(blanks))
         if i == len(cols):
             if first == 0 and lang == "shell":
                 left = shell.separator_start(body[:start])
@@ -139,8 +140,11 @@ def comment_edits(
         if review is None or review.decision == "KEEP":
             target = statement_starts.get(row, row)
             insertions[target].append(comment.text if review is None else review.suggestion)
+    blanks = " \t" if lang == "shell" else None
     standalone = {
-        row for row, segments in by_line.items() if not lines[row][: segments[0].col - 1].strip()
+        row
+        for row, segments in by_line.items()
+        if not lines[row][: segments[0].col - 1].strip(blanks)
     }
     edits = []
     for row, segments in by_line.items():
@@ -166,14 +170,16 @@ def comment_edits(
         if keep:
             target = row
             if row in standalone:
-                while target < len(lines) and (target in standalone or not lines[target].strip()):
+                while target < len(lines) and (
+                    target in standalone or not lines[target].rstrip("\r\n").strip(blanks)
+                ):
                     target += 1
                 if target == len(lines):
                     target = row
             target = statement_starts.get(target, target)
             insertions[target].extend(keep)
     for row, texts in insertions.items():
-        indent = re.match(r"[ \t\f]*", lines[row])
+        indent = re.match(r"[ \t]*" if lang == "shell" else r"[ \t\f]*", lines[row])
         assert indent is not None
         newline = lines[row][len(lines[row].rstrip("\r\n")) :] or "\n"
         pos = starts[row]
@@ -245,7 +251,11 @@ def rewrite(path: Path, reviews: list[Review], audit: dict[str, str]) -> bytes |
         raise ParseError(f"{reviews[0].location}: not a supported source file")
     data = path.read_bytes()
     try:
+        if lang == "python":
+            python.require_utf8(data)
         source = data.decode("utf-8-sig")
+    except ParseError as exc:
+        raise ParseError(f"{path}: {exc}") from exc
     except UnicodeDecodeError as exc:
         raise ParseError(f"{path}: not UTF-8") from exc
     extract = python.extract if lang == "python" else shell.extract

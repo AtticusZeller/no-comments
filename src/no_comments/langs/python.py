@@ -1,4 +1,5 @@
 import ast
+import codecs
 import inspect
 import io
 import re
@@ -14,16 +15,23 @@ _NON_CODE = {tokenize.INDENT, tokenize.DEDENT, tokenize.NL, tokenize.COMMENT, to
 
 def effective_encoding(data: bytes) -> tuple[str, bool]:
     try:
-        encoding, prefix = tokenize.detect_encoding(io.BytesIO(data).readline)
+        lines = io.BytesIO(data.replace(b"\r\n", b"\n").replace(b"\r", b"\n"))
+        encoding, prefix = tokenize.detect_encoding(lines.readline)
     except SyntaxError as exc:
         raise ParseError(f"invalid Python encoding: {exc}") from exc
-    return encoding, any(_COOKIE.match(line) for line in prefix)
+    return codecs.lookup(encoding).name, any(_COOKIE.match(line) for line in prefix)
+
+
+def require_utf8(data: bytes) -> None:
+    encoding, _ = effective_encoding(data)
+    if encoding not in {"utf-8", "utf-8-sig"}:
+        raise ParseError(f"unsupported Python encoding {encoding!r}; expected UTF-8")
 
 
 def statement_starts(source: str) -> dict[int, int]:
     starts = {}
     start = None
-    for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+    for tok in tokenize.generate_tokens(io.StringIO(source, newline=None).readline):
         if tok.type == tokenize.NEWLINE:
             start = None
         elif tok.type not in _NON_CODE and start is None:
@@ -81,7 +89,7 @@ def extract(source: str) -> list[Comment]:
     try:
         comments = [
             segment
-            for tok in tokenize.generate_tokens(io.StringIO(source).readline)
+            for tok in tokenize.generate_tokens(io.StringIO(source, newline=None).readline)
             if tok.type == tokenize.COMMENT
             for segment in comment_segments(tok.start[0], tok.start[1] + 1, tok.string)
         ]

@@ -89,7 +89,7 @@ pre-commit run no-comments --from-ref origin/main --to-ref HEAD
 
 ### 列出存量注释
 
-`audit` 列出指定路径下所有违规的注释和 docstring，不区分新旧，跳过符号链接及通过符号链接访问的文件，退出码始终为 `0`：
+`audit` 列出指定路径下所有违规的注释和 docstring，不区分新旧，跳过符号链接及通过符号链接访问的文件。Python 文件的生效编码不是 UTF-8（可带 BOM）时，`audit` 警告并跳过，`strip` 和 `verify-strip` 报错退出：
 
 ```sh
 uv tool install git+https://github.com/AtticusZeller/no-comments@v0.6.0
