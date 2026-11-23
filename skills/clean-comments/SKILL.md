@@ -52,12 +52,12 @@ no-comments hook 拦住新增的注释，这个 skill 清理已有的注释和 d
 no-comments strip /临时目录/review.txt --audit /临时目录/audit.txt
 ```
 
-命令重新提取注释，核对每条的位置、类型和开头 60 个字符；有任何不一致就整体停下，不写文件。它只应用 DELETE 和 KEEP，从原位置靠后的条目改起。DELETE 清除整行注释或行尾的对应注释段；Python docstring 按语法树删除，函数或类体没有其他语句时补 `...`。KEEP 用建议里的 `# KEEP: ...`，按代码所在行的缩进放在代码上方；docstring 改为 `"""KEEP: ..."""`。Shell 按 tree-sitter 的 `comment` 节点定位。WORKAROUND 和 ENCODE 留给后续提交。
+命令重新提取注释，核对每条的位置、类型和开头 60 个字符；有任何不一致就整体停下，不写文件。它只应用 DELETE 和 KEEP，从原位置靠后的条目改起。DELETE 清除整行注释或行尾的对应注释段；Python docstring 按语法树删除，函数或类体没有其他语句时补 `...`。KEEP 用建议里的 `# KEEP: ...`，建议只能构成一段注释，按语句起始行的缩进放在代码上方；docstring 改为 `"""KEEP: ..."""`。Shell 按 tree-sitter 的 `comment` 节点定位。WORKAROUND 和 ENCODE 留给后续提交。
 
 仓库配了 formatter 时，只对改动过且起点已格式化干净的文件跑；先用检查模式（比如 `ruff format --check`）在起点核实。然后做三项检查：
 
 1. `no-comments verify-strip --base HEAD` 必须以 0 退出。逐个检查列出的 docstring 是否被框架读取；需要保留的帮助文本在第二次提交里改用 `help=`、`description=`。第 0 步导出过 `--help` 的，重新导出并对比，只允许缺少由已删 docstring 提供的帮助文本。
-2. 对改动过的文件用相同的 `--allow` 重跑 audit。DELETE 和 KEEP 不应再出现；剩下的必须能对回 WORKAROUND 或 ENCODE 条目，核对时使用改写后的行列号。
+2. 对改动过的文件用相同的 `--allow` 重跑 audit。DELETE 和 KEEP 不应再出现；剩下的必须能对回 WORKAROUND 或 ENCODE 条目，核对时使用改写后的行列号。如果「待解决」项仍出现在复查结果中，列为阻塞项，报告后不提交。
 3. `git diff` 中每处改动都必须能对回审查表中的条目，包括 KEEP 的挪动和补上的 `...`。对不上的列进报告，不提交。
 
 跑全部测试，通过后提交，比如 `chore: remove stale comments`。

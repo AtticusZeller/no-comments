@@ -89,7 +89,7 @@ pre-commit run no-comments --from-ref origin/main --to-ref HEAD
 
 ### 列出存量注释
 
-`audit` 列出指定路径下所有违规的注释和 docstring，不区分新旧，退出码始终为 `0`：
+`audit` 列出指定路径下所有违规的注释和 docstring，不区分新旧，跳过符号链接及通过符号链接访问的文件，退出码始终为 `0`：
 
 ```sh
 uv tool install git+https://github.com/AtticusZeller/no-comments@v0.6.0
@@ -114,7 +114,9 @@ no-comments audit > /tmp/audit.txt
 no-comments strip /tmp/review.txt --audit /tmp/audit.txt
 ```
 
-审查表是 UTF-8 纯文本，每行格式为 `路径:行号:列号 | 判定 | 理由 | 证据 | 建议写法`。位置原样取自 audit；`KEEP` 的建议写法是完整的 `# KEEP: ...`，其他判定可用 `-` 占位。命令只应用 `DELETE` 和 `KEEP`，保留 `WORKAROUND` 和 `ENCODE`。任一条目当前的位置、类型或前 60 个字符与保存的 audit 不符，命令退出 `2`，不写入任何文件。
+审查表是 UTF-8 纯文本，每行格式为 `路径:行号:列号 | 判定 | 理由 | 证据 | 建议写法`。位置原样取自 audit；`KEEP` 的建议写法是完整的 `# KEEP: ...`，且只能构成一段注释，例如 `# KEEP: literal # x` 不合法。其他判定可用 `-` 占位。命令只应用 `DELETE` 和 `KEEP`，保留 `WORKAROUND` 和 `ENCODE`。
+
+写入前，命令检查所有条目的位置、类型和前 60 个字符是否与原 audit 一致、路径是否经过符号链接，以及改写是否改变生效的 shebang 或 Python 编码声明。核对失败时退出 `2`，不写入任何文件。写入阶段遇到错误也退出 `2`，但不会撤销此前的写入，会报告已经写入的路径。
 
 用 `verify-strip` 检查工作区是否只改了注释。它比较 `--base`（默认 `HEAD`）和工作区；不给文件时检查两者之间有改动的全部 Python、Shell 文件。退出码 `0` 表示只有注释和 docstring 不同，`1` 表示有代码改动并列出文件，`2` 表示出错。删掉的 docstring 会单独列出，因为 typer、click、FastAPI 这类框架可能读取 `__doc__`。
 

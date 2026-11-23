@@ -23,6 +23,15 @@ def shebang_language(first_line: bytes) -> str | None:
     return None
 
 
+def through_symlink(path: Path) -> bool:
+    absolute = path.absolute()
+    return any(part.is_symlink() for part in (*reversed(absolute.parents), absolute))
+
+
+def effective_shebang(data: bytes) -> bytes | None:
+    return data.split(b"\n", 1)[0] if data.startswith(b"#!") else None
+
+
 def detect_language(path: Path) -> str | None:
     if not path.is_file():
         return None

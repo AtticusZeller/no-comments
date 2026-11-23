@@ -8,7 +8,12 @@ from pathlib import Path
 from no_comments import report
 from no_comments.allow import is_allowed
 from no_comments.compare import Pool, new_comments, pool
-from no_comments.detect import EXTENSIONS, detect_language, shebang_language
+from no_comments.detect import (
+    EXTENSIONS,
+    detect_language,
+    shebang_language,
+    through_symlink,
+)
 from no_comments.diff import (
     GitError,
     base_revisions,
@@ -93,6 +98,7 @@ def run_check(files: Sequence[str], extra: Sequence[re.Pattern[str]]) -> int:
 def audit_files(paths: Sequence[str]) -> list[str]:
     if not paths:
         return git("ls-files", "-z").split("\0")[:-1]
+    paths = [p for p in paths if not through_symlink(Path(p))]
     dirs = [p for p in paths if Path(p).is_dir()]
     listed = git("ls-files", "-z", "--", *dirs).split("\0")[:-1] if dirs else []
     return [p for p in paths if not Path(p).is_dir()] + listed
@@ -100,6 +106,8 @@ def audit_files(paths: Sequence[str]) -> list[str]:
 
 def run_audit(paths: Sequence[str], extra: Sequence[re.Pattern[str]]) -> int:
     for name in audit_files(paths):
+        if through_symlink(Path(name)):
+            continue
         lang = detect_language(Path(name))
         if lang is None:
             continue

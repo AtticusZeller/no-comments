@@ -1,15 +1,16 @@
 import ast
 import codecs
+import os
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from itertools import accumulate
 from pathlib import Path
 
-from no_comments.detect import detect_language
-from no_comments.langs import Comment, Kind, ParseError, python, shell
+from no_comments.detect import detect_language, through_symlink
+from no_comments.langs import Comment, Kind, ParseError, comment_segments, python, shell
 from no_comments.report import format_violation
-from no_comments.strip import python_code, shell_code
+from no_comments.strip import changed_header, python_code
 
 _LOCATION = re.compile(r"(.+):([1-9][0-9]*):([1-9][0-9]*)")
 _AUDIT = re.compile(r"(.+?:[1-9][0-9]*:[1-9][0-9]*): NC00[12] \w+ not allowed: ")
@@ -56,7 +57,10 @@ def read_review(table: Path) -> dict[Path, list[Review]]:
             review.suggestion.startswith("# KEEP: ") and review.suggestion[8:].strip()
         ):
             raise ParseError(f"{review.location}: expected a '# KEEP: …' suggestion")
-        path = Path(name).resolve()
+        path = Path(name).absolute()
+        if through_symlink(path):
+            raise ParseError(f"{review.location}: symbolic links are not supported")
+        path = Path(os.path.normpath(path))
         key = (path, review.line, review.col)
         if key in seen:
             raise ParseError(f"{review.location}: duplicate review location")
@@ -78,7 +82,11 @@ def read_audit(audit: Path) -> dict[str, str]:
 
 
 def erase_segments(
-    offset: int, body: str, cols: list[int], selected: list[Review | None]
+    offset: int,
+    body: str,
+    cols: list[int],
+    selected: list[Review | None],
+    lang: str,
 ) -> list[Edit]:
     edits = []
     i = 0
@@ -90,8 +98,10 @@ def erase_segments(
         while i < len(cols) and selected[i] is not None:
             i += 1
         start = cols[first]
-        left = len(body[:start].rstrip(" \t"))
+        left = len(body[:start].rstrip())
         if i == len(cols):
+            if first == 0 and lang == "shell":
+                left = shell.separator_start(body[:start])
             edits.append(Edit(offset + left, offset + len(body)))
         else:
             gap = " " if first and start - left == 1 else ""
@@ -104,19 +114,34 @@ def erase_segments(
 
 
 def comment_edits(
+    source: str,
     lines: list[str],
     starts: list[int],
     comments: list[Comment],
     actions: dict[tuple[int, int], Review],
+    doc_edits: list[Edit],
+    lang: str,
 ) -> list[Edit]:
     by_line: dict[int, list[Comment]] = defaultdict(list)
+    insertions: dict[int, list[str]] = defaultdict(list)
+    statement_starts = (
+        python.statement_starts(source) if lang == "python" else shell.statement_starts(source)
+    )
     for comment in comments:
-        if comment.kind is Kind.COMMENT:
-            by_line[comment.line - 1].append(comment)
+        if comment.kind is not Kind.COMMENT:
+            continue
+        row = comment.line - 1
+        position = starts[row] + comment.col - 1
+        if not any(edit.start <= position < edit.end for edit in doc_edits):
+            by_line[row].append(comment)
+            continue
+        review = actions.get((comment.line, comment.col))
+        if review is None or review.decision == "KEEP":
+            target = statement_starts.get(row, row)
+            insertions[target].append(comment.text if review is None else review.suggestion)
     standalone = {
         row for row, segments in by_line.items() if not lines[row][: segments[0].col - 1].strip()
     }
-    insertions: dict[int, list[str]] = defaultdict(list)
     edits = []
     for row, segments in by_line.items():
         source_line = lines[row]
@@ -125,9 +150,18 @@ def comment_edits(
         if not any(selected):
             continue
         if row in standalone and all(selected):
-            edits.append(Edit(starts[row], starts[row + 1]))
+            continued = (
+                lang == "shell"
+                and row > 0
+                and row - 1 not in by_line
+                and shell.ends_with_escape(lines[row - 1].rstrip("\n"))
+            )
+            end = starts[row] + len(body) if continued else starts[row + 1]
+            edits.append(Edit(starts[row], end))
         else:
-            edits.extend(erase_segments(starts[row], body, [c.col - 1 for c in segments], selected))
+            edits.extend(
+                erase_segments(starts[row], body, [c.col - 1 for c in segments], selected, lang)
+            )
         keep = [r.suggestion for r in selected if r is not None and r.decision == "KEEP"]
         if keep:
             target = row
@@ -136,15 +170,15 @@ def comment_edits(
                     target += 1
                 if target == len(lines):
                     target = row
-            while target and (
-                target - 1 not in by_line and lines[target - 1].rstrip("\r\n").endswith("\\")
-            ):
-                target -= 1
-            indent = re.match(r"[ \t\f]*", lines[target])
-            assert indent is not None
-            newline = lines[target][len(lines[target].rstrip("\r\n")) :] or "\n"
-            insertions[starts[target]].extend(indent[0] + text + newline for text in keep)
-    return edits + [Edit(pos, pos, "".join(text)) for pos, text in insertions.items()]
+            target = statement_starts.get(target, target)
+            insertions[target].extend(keep)
+    for row, texts in insertions.items():
+        indent = re.match(r"[ \t\f]*", lines[row])
+        assert indent is not None
+        newline = lines[row][len(lines[row].rstrip("\r\n")) :] or "\n"
+        pos = starts[row]
+        edits.append(Edit(pos, pos, "".join(indent[0] + text + newline for text in texts)))
+    return edits
 
 
 def docstring_edits(
@@ -198,6 +232,8 @@ def checked_actions(
         comment = found.get(key)
         if comment is None or audit.get(review.location) != format_violation(review.name, comment):
             raise ParseError(f"{review.location}: does not match the saved audit output")
+        if review.decision == "KEEP" and len(comment_segments(1, 1, review.suggestion)) != 1:
+            raise ParseError(f"{review.location}: KEEP suggestion must be a single comment segment")
         if review.decision in _APPLY:
             actions[key] = review
     return actions
@@ -220,9 +256,8 @@ def rewrite(path: Path, reviews: list[Review], audit: dict[str, str]) -> bytes |
         return None
     lines = re.findall(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+", source)
     starts = list(accumulate(map(len, lines), initial=0))
-    edits = comment_edits(lines, starts, comments, actions)
-    if any(found[key].kind is Kind.DOCSTRING for key in actions):
-        edits.extend(docstring_edits(source, lines, starts, actions))
+    doc_edits = docstring_edits(source, lines, starts, actions) if lang == "python" else []
+    edits = doc_edits + comment_edits(source, lines, starts, comments, actions, doc_edits, lang)
     boundary = len(source)
     parts = []
     for edit in sorted(edits, reverse=True):
@@ -232,7 +267,11 @@ def rewrite(path: Path, reviews: list[Review], audit: dict[str, str]) -> bytes |
         boundary = edit.start
     parts.append(source[:boundary])
     rewritten = "".join(reversed(parts))
-    code = python_code if lang == "python" else shell_code
+    bom = codecs.BOM_UTF8 if data.startswith(codecs.BOM_UTF8) else b""
+    output = bom + rewritten.encode("utf-8")
+    if reason := changed_header(data, output, lang):
+        raise ParseError(f"{path}: {reason}")
+    code = python_code if lang == "python" else shell.code_lines
     if code(rewritten) != code(source):
         raise ParseError(f"{path}: rewriting would change code")
     expected = Counter(c.key for c in comments if (c.line, c.col) not in actions)
@@ -243,8 +282,7 @@ def rewrite(path: Path, reviews: list[Review], audit: dict[str, str]) -> bytes |
     )
     if Counter(c.key for c in extract(rewritten)) != expected:
         raise ParseError(f"{path}: rewritten comments do not match the review")
-    bom = codecs.BOM_UTF8 if data.startswith(codecs.BOM_UTF8) else b""
-    return bom + rewritten.encode("utf-8")
+    return output
 
 
 def run_strip(table: Path, snapshot: Path) -> int:
@@ -254,6 +292,16 @@ def run_strip(table: Path, snapshot: Path) -> int:
         output = rewrite(path, reviews, audit)
         if output is not None:
             outputs.append((path, output))
+    written = []
     for path, output in outputs:
-        path.write_bytes(output)
+        try:
+            if through_symlink(path):
+                raise OSError("symbolic links are not supported")
+            path.write_bytes(output)
+        except OSError as exc:
+            completed = ", ".join(written) or "none"
+            raise ParseError(
+                f"could not write {path}: {exc}; already written: {completed}"
+            ) from exc
+        written.append(str(path))
     return 0

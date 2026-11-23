@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from no_comments.detect import EXTENSIONS, shebang_language
+from no_comments.detect import EXTENSIONS, effective_shebang, shebang_language
 from no_comments.diff import _git_bytes, git
 from no_comments.langs import ParseError, python, shell
 
@@ -59,13 +59,12 @@ def docstring_owners(source: str) -> dict[str, int]:
     return found
 
 
-def shell_code(source: str) -> list[str]:
-    lines = source.split("\n")
-    for comment in sorted(shell.extract(source), key=lambda c: (c.line, c.col), reverse=True):
-        row = lines[comment.line - 1]
-        start = comment.col - 1
-        lines[comment.line - 1] = row[:start] + row[start + len(comment.text) :]
-    return [line.rstrip() for line in lines if line.strip()]
+def changed_header(before: bytes, after: bytes, lang: str) -> str | None:
+    if effective_shebang(before) != effective_shebang(after):
+        return "effective shebang changed"
+    if lang == "python" and python.effective_encoding(before) != python.effective_encoding(after):
+        return "effective Python encoding declaration changed"
+    return None
 
 
 def _shebang_language(source: str) -> str | None:
@@ -127,9 +126,12 @@ def verify(base: str, files: Sequence[str]) -> StripReport:
         base_source = _decode(base_bytes, f"{path} ({base})")
         work_source = _decode(work_bytes, path)
         lang = _language(path, base_source, work_source)
-        if lang is None or base_source == work_source:
+        if lang is None or base_bytes == work_bytes:
             continue
         try:
+            if changed_header(base_bytes or b"", work_bytes or b"", lang):
+                report.changed.append(path)
+                continue
             if lang == "python":
                 same = python_code(base_source) == python_code(work_source)
                 if same:
@@ -140,7 +142,7 @@ def verify(base: str, files: Sequence[str]) -> StripReport:
                         if name not in kept
                     ]
             else:
-                same = shell_code(base_source) == shell_code(work_source)
+                same = shell.code_lines(base_source) == shell.code_lines(work_source)
         except ParseError as exc:
             raise ParseError(f"{path}: {exc}") from exc
         if not same:

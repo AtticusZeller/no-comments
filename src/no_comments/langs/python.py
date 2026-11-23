@@ -8,6 +8,30 @@ import warnings
 from no_comments.langs import Comment, Kind, ParseError, comment_segments
 
 _NEWLINE = re.compile(r"\r\n|\r|\n")
+_COOKIE = re.compile(rb"^[ \t\f]*#.*?coding[:=][ \t]*[-\w.]+")
+_NON_CODE = {tokenize.INDENT, tokenize.DEDENT, tokenize.NL, tokenize.COMMENT, tokenize.ENDMARKER}
+
+
+def effective_encoding(data: bytes) -> tuple[str, bool]:
+    try:
+        encoding, prefix = tokenize.detect_encoding(io.BytesIO(data).readline)
+    except SyntaxError as exc:
+        raise ParseError(f"invalid Python encoding: {exc}") from exc
+    return encoding, any(_COOKIE.match(line) for line in prefix)
+
+
+def statement_starts(source: str) -> dict[int, int]:
+    starts = {}
+    start = None
+    for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+        if tok.type == tokenize.NEWLINE:
+            start = None
+        elif tok.type not in _NON_CODE and start is None:
+            start = tok.start[0] - 1
+        if start is not None:
+            for row in range(tok.start[0] - 1, tok.end[0]):
+                starts[row] = start
+    return starts
 
 
 def docstring_value(node: ast.AST) -> str | None:
