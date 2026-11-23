@@ -18,7 +18,7 @@ SAMPLE = ROOT / "tests" / "fixtures" / "cleanup"
 README = (ROOT / "README.md").read_text(encoding="utf-8")
 SKILL_MD = (SKILL / "SKILL.md").read_text(encoding="utf-8")
 PYPROJECT = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-VERSION = re.search(r'^version = "([^"]+)"$', PYPROJECT, re.M).group(1)
+(VERSION,) = re.findall(r'^version = "([^"]+)"$', PYPROJECT, re.MULTILINE)
 UVX = shutil.which("uvx")
 
 
@@ -126,11 +126,11 @@ def sample_files() -> list[str]:
 def test_expected_covers_every_sample_finding(monkeypatch, capsys):
     monkeypatch.chdir(SAMPLE)
     assert main(["audit", *sample_files()]) == 0
-    found = {":".join(line.split(":")[:2]) for line in capsys.readouterr().out.splitlines()}
+    found = [line.split(": ", 1)[0] for line in capsys.readouterr().out.splitlines()]
     expected = (SAMPLE / "expected.md").read_text(encoding="utf-8")
-    row = r"^\| ([\w/.]+:\d+) \| (?:DELETE|ENCODE|KEEP|WORKAROUND) \|"
-    rows = set(re.findall(row, expected, re.M))
-    assert rows == found
+    row = r"^\| ([\w/.]+:\d+:\d+) \| (?:DELETE|ENCODE|KEEP|WORKAROUND) \|"
+    rows = re.findall(row, expected, re.MULTILINE)
+    assert sorted(rows) == sorted(found)
 
 
 def run_sample_tests(root: Path) -> subprocess.CompletedProcess:

@@ -1,13 +1,13 @@
 import ast
+import codecs
 import os
-import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from no_comments.detect import EXTENSIONS, shebang_language
+from no_comments.detect import EXTENSIONS, effective_shebang, shebang_language
 from no_comments.diff import _git_bytes, git
-from no_comments.langs import ParseError, shell
+from no_comments.langs import ParseError, python, shell
 
 DOCSTRING_HINT = (
     "删掉的 docstring 可能被 typer、click、FastAPI 等框架当作帮助文本或接口描述读取（`__doc__`），"
@@ -21,15 +21,6 @@ class StripReport:
     removed_docstrings: list[tuple[str, int, str]] = field(default_factory=list)
 
 
-def _parse_python(source: str) -> ast.Module:
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            return ast.parse(source)
-    except (SyntaxError, ValueError) as exc:
-        raise ParseError(str(exc)) from exc
-
-
 def _is_noop(node: ast.stmt) -> bool:
     if isinstance(node, ast.Pass):
         return True
@@ -41,7 +32,7 @@ def _is_noop(node: ast.stmt) -> bool:
 
 
 def python_code(source: str) -> str:
-    tree = _parse_python(source)
+    tree = python.parse_tree(source)
     for node in list(ast.walk(tree)):
         for name, value in ast.iter_fields(node):
             if isinstance(value, list) and value and all(isinstance(v, ast.stmt) for v in value):
@@ -50,7 +41,7 @@ def python_code(source: str) -> str:
 
 
 def docstring_owners(source: str) -> dict[str, int]:
-    tree = _parse_python(source)
+    tree = python.parse_tree(source)
     found: dict[str, int] = {}
     if ast.get_docstring(tree, clean=False) is not None:
         found["<module>"] = tree.body[0].lineno
@@ -69,17 +60,16 @@ def docstring_owners(source: str) -> dict[str, int]:
     return found
 
 
-def shell_code(source: str) -> list[str]:
-    lines = source.split("\n")
-    for comment in sorted(shell.extract(source), key=lambda c: (c.line, c.col), reverse=True):
-        row = lines[comment.line - 1]
-        start = comment.col - 1
-        lines[comment.line - 1] = row[:start] + row[start + len(comment.text) :]
-    return [line.rstrip() for line in lines if line.strip()]
+def changed_header(before: bytes, after: bytes, lang: str) -> str | None:
+    if effective_shebang(before) != effective_shebang(after):
+        return "effective shebang changed"
+    if lang == "python" and python.effective_encoding(before) != python.effective_encoding(after):
+        return "effective Python encoding declaration changed"
+    return None
 
 
-def _shebang_language(source: str) -> str | None:
-    return shebang_language(source.split("\n", 1)[0].encode("utf-8"))
+def _shebang_language(data: bytes | None) -> str | None:
+    return shebang_language((data or b"").removeprefix(codecs.BOM_UTF8).split(b"\n", 1)[0])
 
 
 def _decode(data: bytes | None, label: str) -> str:
@@ -100,7 +90,7 @@ def _base_blob(base: str, path: str) -> bytes | None:
     return _git_bytes("cat-file", "blob", f"{base}:{path}")
 
 
-def _language(path: str, base_source: str, work_source: str) -> str | None:
+def _language(path: str, base_source: bytes | None, work_source: bytes | None) -> str | None:
     suffix = Path(path).suffix
     if suffix in EXTENSIONS:
         return EXTENSIONS[suffix]
@@ -134,12 +124,20 @@ def verify(base: str, files: Sequence[str]) -> StripReport:
         disk = root / path
         work_bytes = disk.read_bytes() if disk.is_file() else None
         base_bytes = _base_blob(base, path)
-        base_source = _decode(base_bytes, f"{path} ({base})")
-        work_source = _decode(work_bytes, path)
-        lang = _language(path, base_source, work_source)
-        if lang is None or base_source == work_source:
+        lang = _language(path, base_bytes, work_bytes)
+        if lang is None:
             continue
         try:
+            if lang == "python":
+                python.require_utf8(base_bytes or b"")
+                python.require_utf8(work_bytes or b"")
+            base_source = _decode(base_bytes, f"{path} ({base})")
+            work_source = _decode(work_bytes, path)
+            if base_bytes == work_bytes:
+                continue
+            if changed_header(base_bytes or b"", work_bytes or b"", lang):
+                report.changed.append(path)
+                continue
             if lang == "python":
                 same = python_code(base_source) == python_code(work_source)
                 if same:
@@ -150,7 +148,7 @@ def verify(base: str, files: Sequence[str]) -> StripReport:
                         if name not in kept
                     ]
             else:
-                same = shell_code(base_source) == shell_code(work_source)
+                same = shell.code_lines(base_source) == shell.code_lines(work_source)
         except ParseError as exc:
             raise ParseError(f"{path}: {exc}") from exc
         if not same:

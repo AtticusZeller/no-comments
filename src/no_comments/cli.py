@@ -8,7 +8,12 @@ from pathlib import Path
 from no_comments import report
 from no_comments.allow import is_allowed
 from no_comments.compare import Pool, new_comments, pool
-from no_comments.detect import EXTENSIONS, detect_language, shebang_language
+from no_comments.detect import (
+    EXTENSIONS,
+    detect_language,
+    shebang_language,
+    through_symlink,
+)
 from no_comments.diff import (
     GitError,
     base_revisions,
@@ -18,6 +23,7 @@ from no_comments.diff import (
     read_blobs,
 )
 from no_comments.langs import Comment, ParseError, python, shell
+from no_comments.rewrite import run_strip
 from no_comments.strip import run_verify_strip
 
 EXTRACTORS: dict[str, Callable[[str], list[Comment]]] = {
@@ -36,7 +42,10 @@ def parse(source: str, lang: str) -> list[Comment]:
 
 def load_comments(path: Path, lang: str, warn: bool = True) -> list[Comment]:
     try:
-        return parse(path.read_bytes().decode("utf-8-sig"), lang)
+        data = path.read_bytes()
+        if lang == "python":
+            python.require_utf8(data)
+        return parse(data.decode("utf-8-sig"), lang)
     except (ParseError, UnicodeDecodeError) as exc:
         if warn:
             print(f"no-comments: warning: skipping {path}: {exc}", file=sys.stderr)
@@ -92,6 +101,7 @@ def run_check(files: Sequence[str], extra: Sequence[re.Pattern[str]]) -> int:
 def audit_files(paths: Sequence[str]) -> list[str]:
     if not paths:
         return git("ls-files", "-z").split("\0")[:-1]
+    paths = [p for p in paths if not through_symlink(Path(p))]
     dirs = [p for p in paths if Path(p).is_dir()]
     listed = git("ls-files", "-z", "--", *dirs).split("\0")[:-1] if dirs else []
     return [p for p in paths if not Path(p).is_dir()] + listed
@@ -99,6 +109,8 @@ def audit_files(paths: Sequence[str]) -> list[str]:
 
 def run_audit(paths: Sequence[str], extra: Sequence[re.Pattern[str]]) -> int:
     for name in audit_files(paths):
+        if through_symlink(Path(name)):
+            continue
         lang = detect_language(Path(name))
         if lang is None:
             continue
@@ -124,11 +136,14 @@ def build_parser() -> argparse.ArgumentParser:
     check.add_argument("files", nargs="*", metavar="FILE")
     audit = sub.add_parser("audit", parents=[common], help="list every comment in the given paths")
     audit.add_argument("paths", nargs="*", metavar="PATH")
-    strip = sub.add_parser(
+    strip = sub.add_parser("strip", help="apply DELETE and KEEP from a reviewed audit")
+    strip.add_argument("review", type=Path, metavar="REVIEW")
+    strip.add_argument("--audit", required=True, type=Path, metavar="FILE", help="saved audit output")
+    verify_strip = sub.add_parser(
         "verify-strip", help="fail if the working tree differs from REF beyond comments"
     )
-    strip.add_argument("--base", default="HEAD", metavar="REF")
-    strip.add_argument("files", nargs="*", metavar="FILE")
+    verify_strip.add_argument("--base", default="HEAD", metavar="REF")
+    verify_strip.add_argument("files", nargs="*", metavar="FILE")
     return parser
 
 
@@ -139,7 +154,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             return run_check(args.files, args.allow)
         if args.command == "verify-strip":
             return run_verify_strip(args.base, args.files)
+        if args.command == "strip":
+            return run_strip(args.review, args.audit)
         return run_audit(args.paths, args.allow)
-    except (GitError, ParseError, OSError) as exc:
+    except (GitError, ParseError, OSError, UnicodeDecodeError) as exc:
         print(f"no-comments: error: {exc}", file=sys.stderr)
         return 2
