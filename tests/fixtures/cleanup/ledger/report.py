@@ -1,6 +1,6 @@
 from ledger.model import Entry
 
-BATCH_SIZE = 500  # 银行上传接口单次最多接受 500 条，超过返回 413
+BATCH_SIZE = 500  # 银行上传接口单次最多接受 500 条，超过返回 413  # 批大小设为 500
 
 
 def batches(entries: list[Entry]) -> list[list[Entry]]:

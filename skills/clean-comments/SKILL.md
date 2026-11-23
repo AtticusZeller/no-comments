@@ -37,7 +37,7 @@ no-comments hook 拦住新增的注释，这个 skill 清理已有的注释和 d
 
 ## 3. 核对审查结果
 
-主 agent 逐条核对：
+主 agent 先核对每批审查结果的 `路径:行号:列号` 集合与该批 audit 输出完全一致，每个位置恰好出现一次。漏项、多项或重复项交回子 agent 修正，再核对。位置对齐后逐条核对：
 
 - KEEP 和 ENCODE 必须附上 `references/investigate.md` 规定的证据。没有证据或证据含糊的，改判为 DELETE。
 - WORKAROUND 必须写明 hack 在哪几行、它在掩盖什么症状、推断的根因是什么。缺了这些就驳回。
