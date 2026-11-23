@@ -18,6 +18,7 @@ from no_comments.diff import (
     read_blobs,
 )
 from no_comments.langs import Comment, ParseError, python, shell
+from no_comments.rewrite import run_strip
 from no_comments.strip import run_verify_strip
 
 EXTRACTORS: dict[str, Callable[[str], list[Comment]]] = {
@@ -124,11 +125,14 @@ def build_parser() -> argparse.ArgumentParser:
     check.add_argument("files", nargs="*", metavar="FILE")
     audit = sub.add_parser("audit", parents=[common], help="list every comment in the given paths")
     audit.add_argument("paths", nargs="*", metavar="PATH")
-    strip = sub.add_parser(
+    strip = sub.add_parser("strip", help="apply DELETE and KEEP from a reviewed audit")
+    strip.add_argument("review", type=Path, metavar="REVIEW")
+    strip.add_argument("--audit", required=True, type=Path, metavar="FILE", help="saved audit output")
+    verify_strip = sub.add_parser(
         "verify-strip", help="fail if the working tree differs from REF beyond comments"
     )
-    strip.add_argument("--base", default="HEAD", metavar="REF")
-    strip.add_argument("files", nargs="*", metavar="FILE")
+    verify_strip.add_argument("--base", default="HEAD", metavar="REF")
+    verify_strip.add_argument("files", nargs="*", metavar="FILE")
     return parser
 
 
@@ -139,7 +143,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             return run_check(args.files, args.allow)
         if args.command == "verify-strip":
             return run_verify_strip(args.base, args.files)
+        if args.command == "strip":
+            return run_strip(args.review, args.audit)
         return run_audit(args.paths, args.allow)
-    except (GitError, ParseError, OSError) as exc:
+    except (GitError, ParseError, OSError, UnicodeDecodeError) as exc:
         print(f"no-comments: error: {exc}", file=sys.stderr)
         return 2

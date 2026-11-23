@@ -8,9 +8,10 @@
 
 | 模块 | 职责 |
 | --- | --- |
-| `cli.py` | 解析参数，串起 `check`、`audit`、`verify-strip` 的流程，决定退出码 |
+| `cli.py` | 解析参数，串起 `check`、`audit`、`strip`、`verify-strip` 的流程，决定退出码 |
 | `detect.py` | 按扩展名或 shebang 判断语言 |
 | `strip.py` | `verify-strip`：判断工作区相对 base 是否只改了注释和 docstring |
+| `rewrite.py` | `strip`：先用原始 audit 核对审查表，再按原坐标逆序应用 DELETE 和 KEEP |
 | `diff.py` | 调用 git：列出改动文件，解析新增行号和旧路径，确定旧版本 ref，批量读取旧版本内容 |
 | `compare.py` | 按文本出现次数比较整个改动的新旧版本，选出新增的注释 |
 | `allow.py` | 默认放行规则和 `--allow` |
@@ -44,8 +45,8 @@
 - 一条注释 token 按「前面有两个以上空白的 `#`」或「前后都是空白的 `#`」拆成几段，逐段放行、逐段比较，堵住 `# noqa  # 说明` 这种借工具指令夹带说明的写法。去掉 `#` 和空白后为空的段并入下一段，避免把 `#   # 注释` 拆出空注释。工具指令前缀只在段内没有其他前面带空白的 `#` 时放行。
 - `ast.parse` 时屏蔽 `SyntaxWarning`，用户代码里的非法转义不会在 hook 输出里留下无文件名的警告。
 - 按语法识别注释，不用正则：Python 注释用 `tokenize`，单独成句的字符串用 `ast`，Shell 用 tree-sitter。这样字符串和 heredoc 里的 `#` 不会被误判。
-- 任何一步解析失败，都给出警告并跳过整个文件，不影响退出码。旧版本解析失败时，按旧版本为空处理。
-- 不做自动修复，不支持配置文件；要排除路径，用 pre-commit 的 `exclude`。
+- `check` 和 `audit` 解析失败时给出警告并跳过整个文件，不影响退出码。旧版本解析失败时，按旧版本为空处理。`strip` 在所有文件核对并完成内存改写前不落盘。
+- hook 不做自动修复，也不支持配置文件；要排除路径，用 pre-commit 的 `exclude`。
 
 ### verify-strip
 

@@ -9,19 +9,19 @@ no-comments hook 拦住新增的注释，这个 skill 清理已有的注释和 d
 
 下文的 `references/`、`scripts/` 都相对本 skill 所在目录。
 
-下文所有 `no-comments` 都是指 `uvx --from git+https://github.com/AtticusZeller/no-comments@v0.5.1 no-comments`，版本号和 no-comments 仓库 `pyproject.toml` 的 `version` 一致，skill 和 CLI 随同一个 tag 发布。版本固定后 uvx 只在第一次运行时安装，之后走缓存。
+下文所有 `no-comments` 都是指 `uvx --from git+https://github.com/AtticusZeller/no-comments@v0.6.0 no-comments`，版本号和 no-comments 仓库 `pyproject.toml` 的 `version` 一致，skill 和 CLI 随同一个 tag 发布。版本固定后 uvx 只在第一次运行时安装，之后走缓存。
 
 ## 0. 前置检查
 
 - `git status --porcelain` 必须为空。不干净就停下，告诉用户。
-- `uv` 和 `git` 都可用。然后运行 `no-comments --help`，确认输出里有 `verify-strip`。失败就停下，告诉用户原因：缺 uv、没有网络，或者 tag 不存在。
+- `uv` 和 `git` 都可用。然后运行 `no-comments --help`，确认输出里有 `strip` 和 `verify-strip`。失败就停下，告诉用户原因：缺 uv、没有网络，或者 tag 不存在。
 - 从当前提交新开一个分支，比如 `git switch -c clean-comments/<范围>`。记下起点提交，第 7 步要用。
 - 业务仓库的 `.pre-commit-config.yaml` 里没有 no-comments hook 时，先加上，单独提交，比如 `chore: add no-comments pre-commit hook`。写法见 no-comments README 的「快速开始」，`rev` 用上面 uvx 命令里的版本号；仓库没有 `.pre-commit-config.yaml` 就新建一个只含这个 hook 的。这样清理之后新注释提交不进来，第 7 步也用它检查整个清理分支。
 - 仓库用 typer、click、argparse 等框架提供命令行时，导出全部命令和子命令的 `--help` 输出，存到仓库外的临时目录，第 4、5 步之后各对比一次。
 
 ## 1. 列清单
 
-运行 `no-comments audit <范围>`。业务仓库 `.pre-commit-config.yaml` 里 no-comments hook 配了 `--allow` 的，带上同一组参数。
+运行 `no-comments audit <范围>`，把原始输出保存到仓库外的临时文件 `audit.txt`。业务仓库 `.pre-commit-config.yaml` 里 no-comments hook 配了 `--allow` 的，带上同一组参数。
 
 用户没有指定范围时，用起点相对 main 改动过的文件：`git diff --name-only main...<起点>`，不算第 0 步加 hook 的提交。结果为空就问用户要范围；无人值守时停下，在报告里说明。
 
@@ -46,12 +46,21 @@ no-comments hook 拦住新增的注释，这个 skill 清理已有的注释和 d
 
 ## 4. 第一次提交：只动注释
 
-- 删掉所有 DELETE 项。被注释掉的代码整行删掉；行尾注释只删 `#` 及其后面的部分；删掉的 docstring 如果是函数体里唯一的语句，补上 `...`。
-- KEEP 项改写成 `# KEEP: <原因>（<证据链接>）`，单独写在它说明的代码上一行；原来是行尾注释的也挪上去，因为行尾注释变长后 formatter 会把那行代码折开。docstring 改写成 `"""KEEP: <原因>（<证据链接>）"""`。
-- WORKAROUND 和 ENCODE 项的注释这一步先留着，后面的提交会处理。
-- 运行 `no-comments verify-strip --base HEAD`，必须以 0 退出。它列出删掉的 docstring 时，逐个确认框架（typer、click、FastAPI 等）没有读取这些 `__doc__`；读取的改成显式传入 `help=`、`description=`，这部分放进第二次提交。第 0 步导出过 `--help` 的，重新导出并对比：被删的帮助文本这时会缺失，只允许缺这些，第二次提交补回来。
-- 仓库配了 formatter 时，只对改动过的文件跑，并且只跑起点时已经格式化干净的文件：先用 formatter 的检查模式（比如 `ruff format --check`）在起点上确认。起点就没格式化的文件不跑，免得格式改动混进来。
-- 跑全部测试，通过后提交，比如 `chore: remove stale comments`。
+把核对好的审查行合并成仓库外的 UTF-8 纯文本 `review.txt`，每行写 `路径:行号:列号 | 判定 | 理由 | 证据 | 建议写法`，不带表头、代码围栏或「范围外」记录。「待解决」的条目不写入。回到运行 audit 的目录，一次应用整张表：
+
+```sh
+no-comments strip /临时目录/review.txt --audit /临时目录/audit.txt
+```
+
+命令重新提取注释，核对每条的位置、类型和开头 60 个字符；有任何不一致就整体停下，不写文件。它只应用 DELETE 和 KEEP，从原位置靠后的条目改起。DELETE 清除整行注释或行尾的对应注释段；Python docstring 按语法树删除，函数或类体没有其他语句时补 `...`。KEEP 用建议里的 `# KEEP: ...`，按代码所在行的缩进放在代码上方；docstring 改为 `"""KEEP: ..."""`。Shell 按 tree-sitter 的 `comment` 节点定位。WORKAROUND 和 ENCODE 留给后续提交。
+
+仓库配了 formatter 时，只对改动过且起点已格式化干净的文件跑；先用检查模式（比如 `ruff format --check`）在起点核实。然后做三项检查：
+
+1. `no-comments verify-strip --base HEAD` 必须以 0 退出。逐个检查列出的 docstring 是否被框架读取；需要保留的帮助文本在第二次提交里改用 `help=`、`description=`。第 0 步导出过 `--help` 的，重新导出并对比，只允许缺少由已删 docstring 提供的帮助文本。
+2. 对改动过的文件用相同的 `--allow` 重跑 audit。DELETE 和 KEEP 不应再出现；剩下的必须能对回 WORKAROUND 或 ENCODE 条目，核对时使用改写后的行列号。
+3. `git diff` 中每处改动都必须能对回审查表中的条目，包括 KEEP 的挪动和补上的 `...`。对不上的列进报告，不提交。
+
+跑全部测试，通过后提交，比如 `chore: remove stale comments`。
 
 ## 5. 第二次提交：改写成代码
 

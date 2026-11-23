@@ -18,7 +18,7 @@ SAMPLE = ROOT / "tests" / "fixtures" / "cleanup"
 README = (ROOT / "README.md").read_text(encoding="utf-8")
 SKILL_MD = (SKILL / "SKILL.md").read_text(encoding="utf-8")
 PYPROJECT = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-VERSION, = re.findall(r'^version = "([^"]+)"$', PYPROJECT, re.M)
+(VERSION,) = re.findall(r'^version = "([^"]+)"$', PYPROJECT, re.MULTILINE)
 UVX = shutil.which("uvx")
 
 
@@ -129,7 +129,7 @@ def test_expected_covers_every_sample_finding(monkeypatch, capsys):
     found = [line.split(": ", 1)[0] for line in capsys.readouterr().out.splitlines()]
     expected = (SAMPLE / "expected.md").read_text(encoding="utf-8")
     row = r"^\| ([\w/.]+:\d+:\d+) \| (?:DELETE|ENCODE|KEEP|WORKAROUND) \|"
-    rows = re.findall(row, expected, re.M)
+    rows = re.findall(row, expected, re.MULTILINE)
     assert sorted(rows) == sorted(found)
 
 

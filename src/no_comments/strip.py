@@ -1,13 +1,12 @@
 import ast
 import os
-import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from no_comments.detect import EXTENSIONS, shebang_language
 from no_comments.diff import _git_bytes, git
-from no_comments.langs import ParseError, shell
+from no_comments.langs import ParseError, python, shell
 
 DOCSTRING_HINT = (
     "删掉的 docstring 可能被 typer、click、FastAPI 等框架当作帮助文本或接口描述读取（`__doc__`），"
@@ -21,15 +20,6 @@ class StripReport:
     removed_docstrings: list[tuple[str, int, str]] = field(default_factory=list)
 
 
-def _parse_python(source: str) -> ast.Module:
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            return ast.parse(source)
-    except (SyntaxError, ValueError) as exc:
-        raise ParseError(str(exc)) from exc
-
-
 def _is_noop(node: ast.stmt) -> bool:
     if isinstance(node, ast.Pass):
         return True
@@ -41,7 +31,7 @@ def _is_noop(node: ast.stmt) -> bool:
 
 
 def python_code(source: str) -> str:
-    tree = _parse_python(source)
+    tree = python.parse_tree(source)
     for node in list(ast.walk(tree)):
         for name, value in ast.iter_fields(node):
             if isinstance(value, list) and value and all(isinstance(v, ast.stmt) for v in value):
@@ -50,7 +40,7 @@ def python_code(source: str) -> str:
 
 
 def docstring_owners(source: str) -> dict[str, int]:
-    tree = _parse_python(source)
+    tree = python.parse_tree(source)
     found: dict[str, int] = {}
     if ast.get_docstring(tree, clean=False) is not None:
         found["<module>"] = tree.body[0].lineno
