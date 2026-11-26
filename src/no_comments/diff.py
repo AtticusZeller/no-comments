@@ -19,6 +19,7 @@ _DIFF = (
 _MAX_PATHSPEC_BYTES = 100_000
 
 Refs = tuple[str, str]
+Replacement = tuple[range, range]
 
 
 class GitError(Exception):
@@ -30,7 +31,7 @@ class FileDiff:
     old_path: str | None
     new_path: str | None
     added: set[int] = field(default_factory=set)
-    replaced: dict[int, int] = field(default_factory=dict)
+    replaced: list[Replacement] = field(default_factory=list)
 
 
 def diff_range() -> Refs | None:
@@ -90,7 +91,8 @@ def _record_hunk(change: FileDiff, line: str) -> None:
     old_start, old_count, new_start, new_count = (int(group or 1) for group in match.groups())
     added = range(new_start, new_start + new_count)
     change.added.update(added)
-    change.replaced.update(zip(added, range(old_start, old_start + old_count), strict=False))
+    if old_count and new_count:
+        change.replaced.append((range(old_start, old_start + old_count), added))
 
 
 def parse_diff(text: str) -> list[FileDiff]:

@@ -229,3 +229,81 @@ def test_retained_multiline_comment_matches_replaced_continuation(repo, capsys):
     repo.stage("z.ts", "/* existing\n   comment */\n")
     assert main(["check", "a.ts", "z.ts"]) == 1
     assert capsys.readouterr().out.splitlines()[0].startswith("z.ts:1:1: NC001")
+
+
+@pytest.mark.parametrize(
+    "name, source, row",
+    [
+        ("star.ts", 'export * from "./dep" with { custom: "value" };', 1),
+        ("namespace.ts", 'export * as ns from "./dep" with { custom: "value" };', 1),
+        ("named.ts", 'export { thing } from "./dep" with { custom: "value" };', 1),
+        (
+            "nested.d.ts",
+            'declare module "fixture" {\n  export type * from "type-dependency";\n}',
+            2,
+        ),
+    ],
+)
+@pytest.mark.parametrize("has_comment", [False, True], ids=["clean", "commented"])
+def test_module_syntax_variants_are_checked_and_audited(
+    repo, capsys, name, source, row, has_comment
+):
+    lines = source.splitlines()
+    col = len(lines[row - 1]) + 2
+    if has_comment:
+        lines[row - 1] += " // real"
+    repo.stage(name, "\n".join(lines) + "\n")
+    expected = [f"{name}:{row}:{col}: NC001 comment not allowed: // real"] if has_comment else []
+    assert main(["check", name]) == int(has_comment)
+    output = capsys.readouterr()
+    assert [line for line in output.out.splitlines() if "NC001" in line] == expected
+    assert not output.err
+    assert main(["audit", name]) == 0
+    assert capsys.readouterr().out.splitlines() == expected
+
+
+def test_attribute_recovery_preserves_comments_but_not_markers_inside_strings():
+    source = (
+        'export * from "./dep" /* before */ with {\n'
+        '  "/* key */": "// value }", /* inside */\n'
+        "}; // after\n"
+        'const text = `export * from "./other" with { fake: "// text" }`;\n'
+    )
+    assert [c.text for c in extract(source)] == ["/* before */", "/* inside */", "// after"]
+
+
+@pytest.mark.parametrize("command", ["check", "audit"])
+@pytest.mark.parametrize(
+    "source",
+    [
+        'export * from "./dep" with { custom: };',
+        'export * from "./dep" with { custom: 1 };',
+        'const value = "./dep" with { custom: "value" };',
+    ],
+)
+def test_malformed_module_attributes_do_not_pass(repo, capsys, command, source):
+    repo.stage("broken.ts", f"{source} // ordinary\n")
+    assert main([command, "broken.ts"]) == 2
+    assert "broken.ts: could not parse TypeScript or TSX" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "before, after",
+    [
+        ("export const a = 1; // same\n", "export const intro = 0;\nexport const a = 2; // same\n"),
+        ("export const intro = 0;\nexport const a = 1; // same\n", "export const a = 2; // same\n"),
+    ],
+    ids=["insert", "delete"],
+)
+def test_shifted_retained_comment_does_not_take_duplicate_slot(repo, capsys, before, after):
+    generated = "src/generated/a.ts"
+    repo.write(generated, before)
+    repo.commit()
+    repo.stage(generated, after)
+    repo.stage("z.ts", "export const z = 3; // same\n")
+    for targets in ([generated, "z.ts"], ["z.ts"]):
+        assert main(["check", *targets]) == 1
+        out = capsys.readouterr().out
+        assert [line for line in out.splitlines() if "NC001" in line] == [
+            "z.ts:1:21: NC001 comment not allowed: // same"
+        ]

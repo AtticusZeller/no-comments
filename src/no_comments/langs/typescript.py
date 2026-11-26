@@ -1,4 +1,5 @@
 import re
+from collections.abc import Iterator
 
 import tree_sitter_typescript
 from tree_sitter import Language, Node, Parser, Query, QueryCursor
@@ -74,7 +75,7 @@ def _line_comments(row: int, col: int, text: str, file_header: bool) -> list[Com
     ]
 
 
-def _compatibility_edit(node: Node, data: bytes) -> tuple[Node, bytes] | None:
+def _unsupported_modifier(node: Node, data: bytes) -> Node | None:
     error = next((child for child in node.named_children if child.is_error), None)
     if error is None:
         return None
@@ -87,36 +88,131 @@ def _compatibility_edit(node: Node, data: bytes) -> tuple[Node, bytes] | None:
             and text == b"type"
             and following.type in {"*", "namespace_export"}
         ):
-            return error, b" " * len(text)
+            return error
         if (
             node.type == "import_statement"
             and text == b"defer"
             and following.type == "import_clause"
             and any(c.type == "namespace_import" for c in following.named_children)
         ):
-            return error, b" " * len(text)
-    if (
-        node.type == "labeled_statement"
-        and (label := node.child_by_field_name("label")) is not None
-        and data[label.start_byte : label.end_byte] == b"export"
-        and {"export_clause", "from", "string", "with", "{"}.issubset(c.type for c in error.children)
-    ):
-        return label, b"import"
+            return error
     return None
+
+
+def _error_nodes(root: Node) -> Iterator[Node]:
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        yield node
+        stack.extend(child for child in reversed(node.children) if child.has_error)
+
+
+def _tokens(root: Node) -> Iterator[Node]:
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        if node.type == "comment":
+            continue
+        if node.type in {"string", "template_string", "regex", "jsx_text"} or not node.child_count:
+            if not node.is_missing:
+                yield node
+        else:
+            stack.extend(reversed(node.children))
+
+
+def _attribute_end(tokens: list[Node], opening: int) -> int | None:
+    depth = 0
+    for i in range(opening, len(tokens)):
+        token = tokens[i]
+        if token.type == "{":
+            depth += 1
+        elif token.type == "}":
+            depth -= 1
+            if depth == 0:
+                return token.end_byte
+    return None
+
+
+def _mask_attributes(parser: Parser, query: Query, clause: bytes) -> bytes | None:
+    prefix = b'import "module" '
+    root = parser.parse(prefix + clause + b";").root_node
+    if root.has_error or len(root.named_children) != 1:
+        return None
+    statement = root.named_children[0]
+    attribute = next((c for c in statement.named_children if c.type == "import_attribute"), None)
+    if attribute is None:
+        return None
+    attributes = next((c for c in attribute.named_children if c.type == "object"), None)
+    if attributes is None:
+        return None
+    for item in attributes.named_children:
+        if item.type == "comment":
+            continue
+        key, value = item.child_by_field_name("key"), item.child_by_field_name("value")
+        if (
+            item.type != "pair"
+            or key is None
+            or key.type not in {"property_identifier", "string"}
+            or value is None
+            or value.type != "string"
+        ):
+            return None
+    masked = bytearray(re.sub(rb"[^\r\n]", b" ", clause))
+    for comment in QueryCursor(query).captures(root).get("comment", []):
+        start, end = comment.start_byte - len(prefix), comment.end_byte - len(prefix)
+        masked[start:end] = clause[start:end]
+    return bytes(masked)
+
+
+def _recover_attributes(
+    root: Node, parser: Parser, query: Query, data: bytes, adjusted: bytearray
+) -> list[tuple[int, int]]:
+    tokens = list(_tokens(root))
+    sources = []
+    for i, (source, keyword, opening) in enumerate(
+        zip(tokens, tokens[1:], tokens[2:], strict=False)
+    ):
+        if source.type != "string" or keyword.type != "with" or opening.type != "{":
+            continue
+        end = _attribute_end(tokens, i + 2)
+        if end is None:
+            continue
+        start = keyword.start_byte
+        if (masked := _mask_attributes(parser, query, data[start:end])) is not None:
+            adjusted[start:end] = masked
+            sources.append((source.start_byte, source.end_byte))
+    return sources
+
+
+def _is_module_source(root: Node, start: int, end: int) -> bool:
+    node = root.descendant_for_byte_range(start, end)
+    if node is None or (parent := node.parent) is None:
+        return False
+    return parent.type in {"import_statement", "export_statement"} and (
+        parent.child_by_field_name("source") == node
+    )
 
 
 def _parse(data: bytes, language: Language) -> Node:
     parser = _PARSERS[language]
     root = parser.parse(data).root_node
+    if not root.has_error:
+        return root
+    adjusted = bytearray(data)
+    sources = _recover_attributes(root, parser, _QUERIES[language], data, adjusted)
+    if sources:
+        root = parser.parse(bytes(adjusted)).root_node
     if root.has_error:
-        adjusted = bytearray(data)
-        for statement in root.named_children:
-            if edit := _compatibility_edit(statement, data):
-                node, replacement = edit
-                adjusted[node.start_byte : node.end_byte] = replacement
-        if adjusted != data:
+        changed = False
+        for node in _error_nodes(root):
+            if (token := _unsupported_modifier(node, data)) is not None:
+                adjusted[token.start_byte : token.end_byte] = b" " * (
+                    token.end_byte - token.start_byte
+                )
+                changed = True
+        if changed:
             root = parser.parse(bytes(adjusted)).root_node
-    if root.has_error:
+    if root.has_error or not all(_is_module_source(root, *source) for source in sources):
         raise TypeScriptParseError("could not parse TypeScript or TSX with Tree-sitter")
     return root
 
