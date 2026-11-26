@@ -16,7 +16,7 @@ repos:
       - id: no-comments
 ```
 
-之后每次 `git commit` 都会检查暂存区里新增的内容。发现违规时，提交被拦下，每条违规输出一行 `path:line:col: NC001 comment not allowed: <前 60 个字符>`，最后附一段写给 agent 的修改提示。退出码：`0` 通过，`1` 有违规，`2` 参数错误或不在 git 仓库里。
+之后每次 `git commit` 都会检查暂存区里新增的内容。发现违规时，提交被拦下，每条违规输出一行 `path:line:col: NC001 comment not allowed: <前 60 个字符>`，最后附一段写给 agent 的修改提示。退出码：`0` 通过，`1` 有违规，`2` 无法完成检查（如参数错误、不在 git 仓库或无法解析 TypeScript）。
 
 ## 规则
 
@@ -31,7 +31,7 @@ repos:
 
 ### 什么算新增
 
-一条注释要同时满足两个条件才会被报告：它在这次新增或修改的行上；在这次改动涉及的所有文件里，同样的文本改动后比改动前出现得多。比较时忽略注释标记和首尾空白，TypeScript 块注释还忽略续行缩进和行首的装饰性 `*`。所以下面这些情况都不会被报：
+一条注释要同时满足两个条件才会被报告：它在这次新增或修改的行上；在这次改动涉及的所有文件里，同样的文本改动后比改动前出现得多。分配新增次数时，优先报告未在对应旧行保留的注释。比较时忽略注释标记和首尾空白，TypeScript 块注释还忽略续行缩进和行首的装饰性 `*`。所以下面这些情况都不会被报：
 
 - 给文件改名，包括改名时顺带改了别的内容；
 - 只改代码、不改注释，比如把 `x = 1  # note` 改成 `x = 2  # note`；
@@ -63,7 +63,7 @@ repos:
 | TypeScript、TSX | `biome-ignore` |
 | TypeScript、TSX | `<reference` |
 
-TypeScript 和 TSX 中，`biome-ignore` 须写明 Biome 规则类别（包括 `format`）和冒号后的理由，例如 `// biome-ignore lint/suspicious/noExplicitAny: 外部接口没有类型`。`<reference` 只放行文件开头、代码之前的三斜线指令，例如 `/// <reference types="vite/client" />`。指令后用空白和 `//` 另写的注释，或另起的块注释，照常检查。
+TypeScript 和 TSX 中，`biome-ignore` 须写明一个或多个以空白分隔的 Biome 规则类别（包括 `format`）和冒号后的理由，例如 `// biome-ignore lint/suspicious/noExplicitAny: 外部接口没有类型`。`<reference` 只放行文件开头、代码之前的三斜线指令，例如 `/// <reference types="vite/client" />`。指令后用空白和 `//` 另写的注释，或另起的块注释，照常检查。
 
 另有以下几条放行：
 
@@ -77,11 +77,11 @@ TypeScript 和 TSX 中，`biome-ignore` 须写明 Biome 规则类别（包括 `f
 
 ### 检查哪些文件
 
-扩展名为 `.py`、`.pyi` 的文件按 Python 检查，`.sh`、`.bash` 按 Shell 检查。`.ts`（包括 `.d.ts`）按 TypeScript 检查，`.tsx` 按 TSX 检查。其他文件看第一行的 shebang，解释器是 `python*` 时按 Python，是 `sh`、`bash`、`dash`、`ksh`、`ash` 时按 Shell。独立 JavaScript、HTML、CSS、YAML、TOML 和 Dockerfile 不检查。有语法错误或者不是 UTF-8 编码的文件，会给出警告并跳过，不影响退出码。
+扩展名为 `.py`、`.pyi` 的文件按 Python 检查，`.sh`、`.bash` 按 Shell 检查。`.ts`（包括 `.d.ts`）按 TypeScript 检查，`.tsx` 按 TSX 检查。其他文件看第一行的 shebang，解释器是 `python*` 时按 Python，是 `sh`、`bash`、`dash`、`ksh`、`ash` 时按 Shell。独立 JavaScript、HTML、CSS、YAML、TOML 和 Dockerfile 不检查。Python 解析失败或文件不是 UTF-8 编码时，会给出警告并跳过。TypeScript 或 TSX 文件无法解析时，`check` 和 `audit` 报错退出，不会静默跳过。
 
 ## 纯前端仓库接入
 
-本机需要安装 [uv](https://docs.astral.sh/uv/getting-started/installation/)，并保证 Git hook 的 `PATH` 上有 `uvx`。以下两种配置任选其一，都会把暂存的 TypeScript 和 TSX 文件传给固定版本的 `no-comments check`。检查用暂存区确定改动行、从工作区读源码；请在提交前把相关文件的修改完整暂存，避免同一个文件同时有已暂存和未暂存的改动。
+本机需要安装 [uv](https://docs.astral.sh/uv/getting-started/installation/)，并保证 Git hook 的 `PATH` 上有 `uvx`。以下两种配置任选其一，都会把暂存的 TypeScript 和 TSX 文件传给固定版本的 `no-comments check`。检查使用暂存区的文件内容，未暂存的修改不会影响结果。
 
 使用 Lefthook 时，把以下内容加入 `lefthook.yml`，然后运行 `lefthook install`。在 `exclude` 中填写仓库根目录下的生成目录，例如 `src/generated/`：
 
@@ -97,13 +97,16 @@ pre-commit:
       run: uvx --from git+https://github.com/AtticusZeller/no-comments@v0.7.0 no-comments check -- {staged_files}
 ```
 
-使用 Husky 时，安装 Husky 并运行 `npx husky init`，然后在 `.husky/pre-commit` 中加入以下命令。生成目录写在 Git 的排除路径规格里；可追加多条 `':(exclude,glob)目录/**'`：
+使用 Husky 时，安装 Husky 并运行 `npx husky init`，然后在 `.husky/pre-commit` 中加入以下命令。生成目录写在 Git 的排除路径规格里；可追加多条 `':(exclude,glob)目录/**'`。没有待检查的文件时不会启动 `uvx`：
 
 ```sh
 # .husky/pre-commit
 git diff --cached --name-only --diff-filter=ACMR -z -- \
   ':(glob)**/*.ts' ':(glob)**/*.tsx' ':(exclude,glob)src/generated/**' | \
-  xargs -0 uvx --from git+https://github.com/AtticusZeller/no-comments@v0.7.0 no-comments check --
+  xargs -0 sh -c '
+    [ "$#" -gt 0 ] || exit 0
+    exec uvx --from git+https://github.com/AtticusZeller/no-comments@v0.7.0 no-comments check -- "$@"
+  ' no-comments
 ```
 
 ## 更多用法

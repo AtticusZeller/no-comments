@@ -40,7 +40,7 @@ def added(path, refs=None):
 
 
 def test_parse_multiple_hunks_and_pure_deletion():
-    assert parse_diff(MULTI_HUNK) == [FileDiff("a.py", "a.py", {2, 3, 12})]
+    assert parse_diff(MULTI_HUNK) == [FileDiff("a.py", "a.py", {2, 3, 12}, {12: 10})]
 
 
 def test_parse_new_file():
@@ -84,7 +84,7 @@ def test_parse_ignores_content_lines_that_look_like_headers():
         "@@ -1 +1 @@\n--- removed sql comment\n+++ added\n"
         "@@ -5 +5,0 @@\n-x\n+@@ -0,0 +9,9 @@\n"
     )
-    assert parse_diff(text) == [FileDiff("a.sql", "a.sql", {1})]
+    assert parse_diff(text) == [FileDiff("a.sql", "a.sql", {1}, {1: 1})]
 
 
 def test_unquote_plain_path():
@@ -176,10 +176,13 @@ def test_read_blobs(repo):
     (repo.root / "bin.dat").write_bytes(b"\xff\xfe")
     repo.commit()
     assert read_blobs("HEAD", ["a.py", "missing.py", "b c.py", "bin.dat"]) == {
-        "a.py": "x = 1\n",
-        "b c.py": "y = 2\n",
+        "a.py": b"x = 1\n",
+        "b c.py": b"y = 2\n",
+        "bin.dat": b"\xff\xfe",
     }
     assert read_blobs("HEAD", []) == {}
+    repo.stage("b c.py", "staged\n")
+    assert read_blobs("", ["b c.py"]) == {"b c.py": b"staged\n"}
 
 
 def test_not_a_git_repo(tmp_path, monkeypatch):
@@ -196,7 +199,7 @@ def test_only_relevant_files_are_diffed(repo):
     repo.stage("a.py", "x = 2\n")
     repo.stage("data.json", '{"a": 1}\n')
     changes = collect_changes(None, lambda p: p.endswith(".py"))
-    assert changes == [FileDiff("a.py", "a.py", {1})]
+    assert changes == [FileDiff("a.py", "a.py", {1}, {1: 1})]
 
 
 def test_rename_survives_path_filtering(repo):

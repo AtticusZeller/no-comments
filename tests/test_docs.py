@@ -70,8 +70,12 @@ def test_readme_has_no_pending_section():
     assert not re.search(r"^#+\s*待定", README, re.MULTILINE)
 
 
+HUSKY = README.split("```sh\n# .husky/pre-commit\n")[1].split("```")[0]
+
+
 def test_frontend_templates_call_check_with_staged_filenames(repo):
     repo.stage("-dash.d.ts", "// forbidden\n")
+    repo.write("-dash.d.ts", "declare const inWorktree: string;\n")
     repo.stage("src/space name.tsx", "const view = <p>{/* forbidden */}</p>;\n")
     repo.stage("src/generated/client.ts", "// generated\n")
     repo.stage("plain.js", "// ignored\n")
@@ -86,8 +90,7 @@ def test_frontend_templates_call_check_with_staged_filenames(repo):
     lefthook = yaml.safe_load(README.split("```yaml\n# lefthook.yml\n")[1].split("```")[0])
     run = lefthook["pre-commit"]["jobs"][0]["run"]
     command = run.replace("{staged_files}", shlex.join(["-dash.d.ts", "src/space name.tsx"]))
-    husky = README.split("```sh\n# .husky/pre-commit\n")[1].split("```")[0]
-    for hook in (command, husky):
+    for hook in (command, HUSKY):
         result = subprocess.run(
             ["sh", "-c", hook], env=env, capture_output=True, text=True, check=False
         )
@@ -98,3 +101,12 @@ def test_frontend_templates_call_check_with_staged_filenames(repo):
             "-dash.d.ts:1:1: NC001 comment not allowed: // forbidden",
             "src/space name.tsx:1:18: NC001 comment not allowed: /* forbidden */",
         ]
+
+
+def test_husky_template_does_not_start_uvx_for_excluded_files(repo):
+    repo.stage("src/generated/client.ts", "// generated\n")
+    uvx = repo.write("bin/uvx", "#!/bin/sh\nexit 42\n")
+    uvx.chmod(0o755)
+    env = {**os.environ, "PATH": f"{uvx.parent}{os.pathsep}{os.environ['PATH']}"}
+    result = subprocess.run(["sh", "-c", HUSKY], env=env, capture_output=True, check=False)
+    assert result.returncode == 0, result.stderr

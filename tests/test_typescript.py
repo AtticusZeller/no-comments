@@ -141,12 +141,11 @@ def test_merge_resolution_reports_new_comment_but_not_incoming_comment(repo, cap
     assert "incoming" not in out
 
 
-def test_syntax_errors_warn_and_skip_file(repo, capsys):
+@pytest.mark.parametrize("command", ["check", "audit"])
+def test_typescript_parse_error_does_not_pass(repo, capsys, command):
     repo.stage("broken.ts", "const x = ; // ordinary\n")
-    assert main(["check", "broken.ts"]) == 0
-    output = capsys.readouterr()
-    assert "warning: skipping broken.ts" in output.err
-    assert not output.out
+    assert main([command, "broken.ts"]) == 2
+    assert "broken.ts: could not parse TypeScript or TSX" in capsys.readouterr().err
 
 
 def test_strip_leaves_typescript_unsupported(repo, capsys):
@@ -162,3 +161,71 @@ def test_strip_leaves_typescript_unsupported(repo, capsys):
     repo.write("a.ts", "const n = 2;\n")
     assert main(["verify-strip"]) == 0
     assert main(["verify-strip", "a.ts"]) == 0
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        'export type * from "./dep";',
+        'export type /* modifier note */ * as ns from "./dep";',
+        'import defer * as mod from "./dep";',
+        'import data from "./data.json" with { type: "json" };',
+        'export { default } from "./data.json" with { type: "json" };',
+    ],
+)
+def test_modern_typescript_syntax_is_checked_and_audited(repo, capsys, statement):
+    repo.stage("modern.ts", f'{statement} // real\nconst x = "// not a comment";\n')
+    expected = f"modern.ts:1:{len(statement) + 2}: NC001 comment not allowed: // real"
+    assert main(["check", "modern.ts"]) == 1
+    captured = capsys.readouterr()
+    findings = [line for line in captured.out.splitlines() if "NC001" in line]
+    assert findings[-1:] == [expected]
+    assert len(findings) == 1 + ("/* modifier note */" in statement)
+    assert not captured.err
+    assert main(["audit", "modern.ts"]) == 0
+    assert capsys.readouterr().out.splitlines() == findings
+
+
+@pytest.mark.parametrize("existing", ["a.ts", "src/generated/a.ts"])
+def test_retained_comment_does_not_take_duplicate_slot(repo, capsys, existing):
+    repo.write(existing, "export const a = 1; // same\n")
+    repo.commit()
+    repo.stage(existing, "export const a = 2; // same\n")
+    repo.stage("z.ts", "export const z = 3; // same\n")
+    for targets in ([existing, "z.ts"], ["z.ts"]):
+        assert main(["check", *targets]) == 1
+        out = capsys.readouterr().out
+        assert [line for line in out.splitlines() if "NC001" in line] == [
+            "z.ts:1:21: NC001 comment not allowed: // same"
+        ]
+
+
+def test_biome_multi_rule_suppression_only_reports_ordinary_tail(repo, capsys):
+    directive = "// biome-ignore lint/suspicious/noExplicitAny lint/suspicious/noConsole: reason"
+    code = "console.log(1 as any);\n"
+    repo.stage("a.ts", f"{directive}\n{code}")
+    assert main(["check", "a.ts"]) == 0
+    repo.stage("a.ts", f"{directive} // ordinary\n{code}")
+    assert main(["check", "a.ts"]) == 1
+    out = capsys.readouterr().out
+    assert [line for line in out.splitlines() if "NC001" in line] == [
+        f"a.ts:1:{len(directive) + 2}: NC001 comment not allowed: // ordinary"
+    ]
+
+
+def test_biome_protocol_relative_url_is_not_a_comment_suffix(repo, capsys):
+    directive = "// biome-ignore format: Refer to //example.test/docs"
+    repo.stage("a.ts", f"{directive} // ordinary\nexport const x = [1,2];\n")
+    assert main(["check", "a.ts"]) == 1
+    assert capsys.readouterr().out.splitlines()[0] == (
+        f"a.ts:1:{len(directive) + 2}: NC001 comment not allowed: // ordinary"
+    )
+
+
+def test_retained_multiline_comment_matches_replaced_continuation(repo, capsys):
+    repo.write("a.ts", "/* existing\n   comment */\n")
+    repo.commit()
+    repo.stage("a.ts", "/* existing\n  comment */\n")
+    repo.stage("z.ts", "/* existing\n   comment */\n")
+    assert main(["check", "a.ts", "z.ts"]) == 1
+    assert capsys.readouterr().out.splitlines()[0].startswith("z.ts:1:1: NC001")

@@ -1,7 +1,7 @@
 import re
 
 import tree_sitter_typescript
-from tree_sitter import Language, Parser, Query, QueryCursor
+from tree_sitter import Language, Node, Parser, Query, QueryCursor
 
 from no_comments.langs import Comment, ParseError
 
@@ -9,17 +9,18 @@ _TS = Language(tree_sitter_typescript.language_typescript())
 _TSX = Language(tree_sitter_typescript.language_tsx())
 _PARSERS = {language: Parser(language) for language in (_TS, _TSX)}
 _QUERIES = {language: Query(language, "(comment) @comment") for language in (_TS, _TSX)}
-_SEGMENT = re.compile(r"[ \t]+(?=//)")
+_SEGMENT = re.compile(r"[ \t]+(?=//)(?!//(?:[a-zA-Z0-9-]+\.)+[a-zA-Z0-9-]+(?=[/:?#\s]|$))")
 BIOME_PREFIX = "biome-ignore"
 REFERENCE_PREFIX = "<reference"
-_BIOME = re.compile(
-    rf"{BIOME_PREFIX}"
-    r"[ \t]+(?:format|(?:lint|assist|syntax)(?:/[\w-]+){0,2})"
-    r"(?:\([^\r\n()]+\))?[ \t]*:[ \t]*\S"
-)
+_BIOME_SELECTOR = r"(?:format|(?:lint|assist|syntax)(?:/[\w-]+){0,2})(?:\([^\r\n()]+\))?"
+_BIOME = re.compile(rf"{BIOME_PREFIX}(?:[ \t]+{_BIOME_SELECTOR})+[ \t]*:[ \t]*\S")
 _ATTRIBUTE = re.compile(r"""([a-z-]+)[ \t]*=[ \t]*(?:"([^"\r\n]*)"|'([^'\r\n]*)')""")
 _REFERENCE = re.compile(rf"{REFERENCE_PREFIX}(?:[ \t]+{_ATTRIBUTE.pattern})+[ \t]*/>")
 _BLOCK_MARGIN = re.compile(r"^[ \t]*\* ?", re.MULTILINE)
+
+
+class TypeScriptParseError(ParseError):
+    pass
 
 
 def _reference(text: str) -> bool:
@@ -73,11 +74,56 @@ def _line_comments(row: int, col: int, text: str, file_header: bool) -> list[Com
     ]
 
 
+def _compatibility_edit(node: Node, data: bytes) -> tuple[Node, bytes] | None:
+    error = next((child for child in node.named_children if child.is_error), None)
+    if error is None:
+        return None
+    text = data[error.start_byte : error.end_byte]
+    on_right = (child for child in node.children if child.start_byte >= error.end_byte)
+    following = next((child for child in on_right if child.type != "comment"), None)
+    if following is not None:
+        if (
+            node.type == "export_statement"
+            and text == b"type"
+            and following.type in {"*", "namespace_export"}
+        ):
+            return error, b" " * len(text)
+        if (
+            node.type == "import_statement"
+            and text == b"defer"
+            and following.type == "import_clause"
+            and any(c.type == "namespace_import" for c in following.named_children)
+        ):
+            return error, b" " * len(text)
+    if (
+        node.type == "labeled_statement"
+        and (label := node.child_by_field_name("label")) is not None
+        and data[label.start_byte : label.end_byte] == b"export"
+        and {"export_clause", "from", "string", "with", "{"}.issubset(c.type for c in error.children)
+    ):
+        return label, b"import"
+    return None
+
+
+def _parse(data: bytes, language: Language) -> Node:
+    parser = _PARSERS[language]
+    root = parser.parse(data).root_node
+    if root.has_error:
+        adjusted = bytearray(data)
+        for statement in root.named_children:
+            if edit := _compatibility_edit(statement, data):
+                node, replacement = edit
+                adjusted[node.start_byte : node.end_byte] = replacement
+        if adjusted != data:
+            root = parser.parse(bytes(adjusted)).root_node
+    if root.has_error:
+        raise TypeScriptParseError("could not parse TypeScript or TSX with Tree-sitter")
+    return root
+
+
 def _extract(source: str, language: Language) -> list[Comment]:
     data = source.encode("utf-8")
-    root = _PARSERS[language].parse(data).root_node
-    if root.has_error:
-        raise ParseError("invalid TypeScript or TSX syntax")
+    root = _parse(data, language)
     lines = data.split(b"\n")
     header_end = next(
         (

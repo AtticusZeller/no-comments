@@ -540,3 +540,35 @@ def test_shape_docstring_has_no_shape_hint(repo, capsys):
     repo.stage("a.py", '"""(B, N, 3)"""\n')
     assert main(["check", "a.py"]) == 1
     assert SHAPE_HINT not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "name, prefix, code, comment",
+    [
+        ("-dash.d.ts", "", "declare const answer: number;\n", "// staged violation\n"),
+        ("a.py", "", "x = 1\n", "# staged violation\n"),
+        ("bin/tool", "#!/bin/sh\n", "echo ok\n", "# staged violation\n"),
+    ],
+)
+def test_check_uses_index_when_file_is_partially_staged(repo, capsys, name, prefix, code, comment):
+    repo.write(name, prefix + code)
+    repo.commit()
+    repo.stage(name, prefix + comment + code)
+    repo.write(name, code)
+    assert main(["check", "--", name]) == 1
+    assert "NC001 comment not allowed: " + comment.strip() in capsys.readouterr().out
+    repo.stage(name, prefix + code + "\n")
+    repo.write(name, prefix + code + comment)
+    assert main(["check", "--", name]) == 0
+
+
+def test_check_range_reads_to_ref_not_worktree(repo, monkeypatch, capsys):
+    repo.write("a.ts", "const a = 1;\n")
+    base = repo.commit()
+    repo.write("a.ts", "const a = 2; // branch comment\n")
+    tip = repo.commit()
+    repo.write("a.ts", "const a = 2;\n")
+    monkeypatch.setenv("PRE_COMMIT_FROM_REF", base)
+    monkeypatch.setenv("PRE_COMMIT_TO_REF", tip)
+    assert main(["check", "a.ts"]) == 1
+    assert "// branch comment" in capsys.readouterr().out
