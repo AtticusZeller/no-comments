@@ -5,7 +5,12 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from no_comments.detect import EXTENSIONS, effective_shebang, shebang_language
+from no_comments.detect import (
+    EXTENSIONS,
+    STRIP_LANGUAGES,
+    effective_shebang,
+    shebang_language,
+)
 from no_comments.diff import _git_bytes, git
 from no_comments.langs import ParseError, python, shell
 
@@ -125,7 +130,7 @@ def verify(base: str, files: Sequence[str]) -> StripReport:
         work_bytes = disk.read_bytes() if disk.is_file() else None
         base_bytes = _base_blob(base, path)
         lang = _language(path, base_bytes, work_bytes)
-        if lang is None:
+        if lang not in STRIP_LANGUAGES:
             continue
         try:
             if lang == "python":

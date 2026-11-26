@@ -211,15 +211,24 @@ def pre_commit(repo, home, *args):
 
 
 @needs_pre_commit
-def test_try_repo_blocks_violation_then_passes(repo, pre_commit_home):
-    repo.write("a.py", "x = 1\n")
+@pytest.mark.parametrize(
+    "name, source, marker",
+    [
+        ("a.py", "x = 1\n", "#"),
+        ("a.ts", "const x = 1;\n", "//"),
+        ("env.d.ts", "declare const env: string;\n", "//"),
+        ("a.tsx", "const view = <p />;\n", "//"),
+    ],
+)
+def test_try_repo_blocks_violation_then_passes(repo, pre_commit_home, name, source, marker):
+    repo.write(name, source)
     repo.commit()
-    repo.stage("a.py", "x = 1\n# 修复 bug\n")
+    repo.stage(name, f"{source}{marker} 修复 bug\n")
     result = pre_commit(repo, pre_commit_home, "try-repo", str(ROOT), "no-comments")
     assert result.returncode == 1, result.stdout + result.stderr
-    assert "a.py:2:1: NC001 comment not allowed: # 修复 bug" in result.stdout
+    assert f"{name}:2:1: NC001 comment not allowed: {marker} 修复 bug" in result.stdout
     assert HINT in result.stdout
-    repo.stage("a.py", "x = 1\ny = 2\n")
+    repo.stage(name, source + "\n")
     result = pre_commit(repo, pre_commit_home, "try-repo", str(ROOT), "no-comments")
     assert result.returncode == 0, result.stdout + result.stderr
 

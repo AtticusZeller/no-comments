@@ -22,13 +22,15 @@ from no_comments.diff import (
     git,
     read_blobs,
 )
-from no_comments.langs import Comment, ParseError, python, shell
+from no_comments.langs import Comment, ParseError, python, shell, typescript
 from no_comments.rewrite import run_strip
 from no_comments.strip import run_verify_strip
 
 EXTRACTORS: dict[str, Callable[[str], list[Comment]]] = {
     "python": python.extract,
     "shell": shell.extract,
+    "typescript": typescript.extract,
+    "tsx": typescript.extract_tsx,
 }
 
 

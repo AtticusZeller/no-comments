@@ -2,7 +2,15 @@ import os
 import re
 from pathlib import Path
 
-EXTENSIONS = {".py": "python", ".pyi": "python", ".sh": "shell", ".bash": "shell"}
+STRIP_LANGUAGES = {"python", "shell"}
+EXTENSIONS = {
+    ".py": "python",
+    ".pyi": "python",
+    ".sh": "shell",
+    ".bash": "shell",
+    ".ts": "typescript",
+    ".tsx": "tsx",
+}
 SHELL_INTERPRETERS = {"sh", "bash", "dash", "ksh", "ash"}
 _PYTHON_INTERPRETER = re.compile(r"python[0-9.]*")
 

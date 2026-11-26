@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from itertools import accumulate
 from pathlib import Path
 
-from no_comments.detect import detect_language, through_symlink
+from no_comments.detect import STRIP_LANGUAGES, detect_language, through_symlink
 from no_comments.langs import Comment, Kind, ParseError, comment_segments, python, shell
 from no_comments.report import format_violation
 from no_comments.strip import changed_header, python_code
@@ -247,7 +247,7 @@ def checked_actions(
 
 def rewrite(path: Path, reviews: list[Review], audit: dict[str, str]) -> bytes | None:
     lang = detect_language(path)
-    if lang is None:
+    if lang not in STRIP_LANGUAGES:
         raise ParseError(f"{reviews[0].location}: not a supported source file")
     data = path.read_bytes()
     try:

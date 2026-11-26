@@ -19,6 +19,7 @@
 | `langs/__init__.py` | `Comment`、`Kind`、`ParseError`，以及把一行里接连的几段注释拆开的 `comment_segments` |
 | `langs/python.py` | 用 `tokenize` 提取注释，用 `ast` 提取单独成句的字符串 |
 | `langs/shell.py` | 用 tree-sitter-bash 提取 `comment` 节点 |
+| `langs/typescript.py` | 用 Tree-sitter 的 TypeScript 和 TSX 语法提取 `comment` 节点，识别指令和注释范围 |
 
 ### 数据流
 
@@ -44,13 +45,13 @@
 - 比较前先规范化文本。注释取去掉开头所有 `#` 和空白后的内容，这样取消注释一段代码时其中原有的注释不算新增；docstring 用 `inspect.cleandoc` 规范缩进，挪进类里重新缩进不算新增。
 - 一条注释 token 按「前面有两个以上空白的 `#`」或「前后都是空白的 `#`」拆成几段，逐段放行、逐段比较，堵住 `# noqa  # 说明` 这种借工具指令夹带说明的写法。去掉 `#` 和空白后为空的段并入下一段，避免把 `#   # 注释` 拆出空注释。工具指令前缀只在段内没有其他前面带空白的 `#` 时放行。
 - `ast.parse` 时屏蔽 `SyntaxWarning`，用户代码里的非法转义不会在 hook 输出里留下无文件名的警告。
-- 按语法识别注释，不用正则：Python 注释用 `tokenize`，单独成句的字符串用 `ast`，Shell 用 tree-sitter。这样字符串和 heredoc 里的 `#` 不会被误判。
+- 按语法识别注释，不用正则：Python 注释用 `tokenize`，单独成句的字符串用 `ast`，Shell、TypeScript 和 TSX 用 Tree-sitter。字符串、heredoc、模板和 JSX 文本里的注释符号不参与提取。TypeScript 的多行块注释按整个行号范围匹配新增行，输出保持每条违规一行。
 - `check` 和 `audit` 解析失败时给出警告并跳过整个文件，不影响退出码。旧版本解析失败时，按旧版本为空处理。`audit` 跳过符号链接，`strip` 拒绝经过符号链接的路径，并且在所有文件核对完成前不落盘。
 - hook 不做自动修复，也不支持配置文件；要排除路径，用 pre-commit 的 `exclude`。
 
 ### verify-strip
 
-`verify-strip` 读取 base 版本（`git cat-file`）和工作区版本，两边做同样的去注释处理后比较，复用 hook 的解析方式，不另写一套：
+`verify-strip` 和 `strip` 只支持 Python 和 Shell。`verify-strip` 读取 base 版本（`git cat-file`）和工作区版本，两边做同样的去注释处理后比较，复用 hook 的解析方式，不另写一套：
 
 - Python：`ast.parse` 后去掉所有单独成句的字符串，以及 `pass` 和单独的 `...`，再比较 `ast.dump`。`ast` 本身不含注释；去掉 `pass` 和 `...` 是因为删掉唯一的 docstring 后要补一个占位语句。删掉的 docstring 按「所属的类或函数名」比对两边，列成提示。
 - Shell：用 `langs/shell.py` 定位注释，去掉注释和不影响语法的行尾空白及空行，保留被转义的空白和终止续行的空行，再逐行比较。
@@ -85,7 +86,7 @@ pre-commit install
 每条约束后面注明由什么来保证：
 
 - 本仓库不写注释和 docstring。由 `test_repository_source_has_no_comments` 和 pre-commit hook 强制。
-- 运行依赖只有 `tree-sitter` 和 `tree-sitter-bash`。由 `tests/test_docs.py` 强制。
+- 运行依赖只有 `tree-sitter`、`tree-sitter-bash` 和 `tree-sitter-typescript`。由 `tests/test_docs.py` 强制。
 - 改放行规则时，同时改 `allow.py`、README 的放行表和对应测试。由 `tests/test_docs.py` 强制两边一致。
 - 改规则编号时，同时改 `report.CODES` 和 README。由 `tests/test_docs.py` 强制。
 - 新增语言时：在 `langs/` 下加一个模块实现 `extract(source: str) -> list[Comment]`，再更新 `detect.EXTENSIONS`、`.pre-commit-hooks.yaml` 里的 `types_or`、README 中支持的语言，并补测试。靠评审保证。

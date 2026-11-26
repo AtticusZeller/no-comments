@@ -1,6 +1,6 @@
 [project]
 name = "no-comments"
-version = "0.6.0"
+version = "0.7.0"
 description = "pre-commit hook that rejects newly added code comments"
 readme = "README.md"
 authors = [
@@ -10,6 +10,7 @@ requires-python = ">=3.10"
 dependencies = [
     "tree-sitter>=0.26.1",
     "tree-sitter-bash>=0.25.1",
+    "tree-sitter-typescript>=0.23.2",
 ]
 
 [project.scripts]

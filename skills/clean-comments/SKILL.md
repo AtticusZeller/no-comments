@@ -9,7 +9,7 @@ no-comments hook 拦住新增的注释，这个 skill 清理已有的注释和 d
 
 下文的 `references/`、`scripts/` 都相对本 skill 所在目录。
 
-下文所有 `no-comments` 都是指 `uvx --from git+https://github.com/AtticusZeller/no-comments@v0.6.0 no-comments`，版本号和 no-comments 仓库 `pyproject.toml` 的 `version` 一致，skill 和 CLI 随同一个 tag 发布。版本固定后 uvx 只在第一次运行时安装，之后走缓存。
+下文所有 `no-comments` 都是指 `uvx --from git+https://github.com/AtticusZeller/no-comments@v0.7.0 no-comments`，版本号和 no-comments 仓库 `pyproject.toml` 的 `version` 一致，skill 和 CLI 随同一个 tag 发布。版本固定后 uvx 只在第一次运行时安装，之后走缓存。
 
 ## 0. 前置检查
 
@@ -20,6 +20,7 @@ no-comments hook 拦住新增的注释，这个 skill 清理已有的注释和 d
 - 仓库用 typer、click、argparse 等框架提供命令行时，导出全部命令和子命令的 `--help` 输出，存到仓库外的临时目录，第 4、5 步之后各对比一次。
 
 ## 1. 列清单
+本 skill 只处理 Python 和 Shell。混合语言仓库要把这些语言的文件逐个传给 audit，不要传包含 TypeScript 或 TSX 的目录。
 
 运行 `no-comments audit <范围>`，把原始输出保存到仓库外的临时文件 `audit.txt`。业务仓库 `.pre-commit-config.yaml` 里 no-comments hook 配了 `--allow` 的，带上同一组参数。
 

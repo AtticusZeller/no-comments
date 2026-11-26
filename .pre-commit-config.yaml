@@ -5,5 +5,5 @@ repos:
         name: no-comments
         entry: uv run --frozen no-comments check
         language: system
-        types_or: [python, pyi, shell]
+        types_or: [python, pyi, shell, ts, tsx]
         exclude: ^tests/fixtures/cleanup/
