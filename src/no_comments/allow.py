@@ -1,7 +1,7 @@
 import re
 from collections.abc import Sequence
 
-from no_comments.langs import Comment, Kind
+from no_comments.langs import Comment, Kind, typescript
 
 COMMON_PREFIXES = ("KEEP:", "SPDX-License-Identifier:")
 PYTHON_PREFIXES = (
@@ -31,7 +31,9 @@ def is_allowed(lang: str, comment: Comment, extra: Sequence[re.Pattern[str]] = (
         return True
     if lang == "python" and comment.line <= 2 and _CODING.search(text):
         return True
-    tool_prefixes = PYTHON_PREFIXES if lang == "python" else SHELL_PREFIXES
+    if lang in {"typescript", "tsx"} and typescript.is_directive(comment):
+        return True
+    tool_prefixes = {"python": PYTHON_PREFIXES, "shell": SHELL_PREFIXES}.get(lang, ())
     if text.startswith(tool_prefixes) and not _TRAILING_HASH.search(text):
         return True
     return any(pattern.search(text) for pattern in extra)

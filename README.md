@@ -1,6 +1,6 @@
 # no-comments
 
-`no-comments` 是一个 pre-commit hook，在提交时拦截新增的代码注释和 docstring，支持 Python 和 Shell。
+`no-comments` 是一个 pre-commit hook，在提交时拦截新增的代码注释和 docstring，支持 Python、Shell、TypeScript 和 TSX。
 
 Claude Code、Codex 等 agent 写的注释，多是变更叙事、对代码的复述，或者已经过时的说明。后来的 agent 会把这些文字当成可信的规格，进而误读代码，并模仿着写出更多注释。代码做什么交给命名、类型和结构表达，改动历史交给 git，必须遵守的约束写成测试或类型。
 
@@ -11,12 +11,12 @@ Claude Code、Codex 等 agent 写的注释，多是变更叙事、对代码的�
 ```yaml
 repos:
   - repo: https://github.com/AtticusZeller/no-comments
-    rev: v0.6.0
+    rev: v0.7.0
     hooks:
       - id: no-comments
 ```
 
-之后每次 `git commit` 都会检查暂存区里新增的内容。发现违规时，提交被拦下，每条违规输出一行 `path:line:col: NC001 comment not allowed: <前 60 个字符>`，最后附一段写给 agent 的修改提示。退出码：`0` 通过，`1` 有违规，`2` 参数错误或不在 git 仓库里。
+之后每次 `git commit` 都会检查暂存区里新增的内容。发现违规时，提交被拦下，每条违规输出一行 `path:line:col: NC001 comment not allowed: <前 60 个字符>`，最后附一段写给 agent 的修改提示。退出码：`0` 通过，`1` 有违规，`2` 无法完成检查（如参数错误、不在 git 仓库或无法解析 TypeScript）。
 
 ## 规则
 
@@ -24,14 +24,14 @@ repos:
 
 | 编号 | 拦截对象 | 语言 |
 | --- | --- | --- |
-| `NC001` | 注释（`# ...`），包括行尾注释 | Python、Shell |
+| `NC001` | 行注释、块注释、JSDoc 和 JSX 注释 | Python、Shell、TypeScript、TSX |
 | `NC002` | 单独成句的字符串：模块、类、函数的 docstring，以及用三引号字符串充当注释的写法 | Python |
 
 赋值给变量的字符串、f-string 和作为参数传递的字符串，都不算 `NC002`。
 
 ### 什么算新增
 
-一条注释要同时满足两个条件才会被报告：它在这次新增或修改的行上；在这次改动涉及的所有文件里，同样的文本改动后比改动前出现得多。比较时忽略开头的 `#` 和空白。所以下面这些情况都不会被报：
+一条注释要同时满足两个条件才会被报告：它在这次新增或修改的行上；在这次改动涉及的所有文件里，同样的文本改动后比改动前出现得多。同一文件的 diff 替换块内，先按文本配对保留的注释，再分配新增次数；插入或删除代码行导致注释移位不影响配对。比较时忽略注释标记和首尾空白，TypeScript 块注释还忽略续行缩进和行首的装饰性 `*`。所以下面这些情况都不会被报：
 
 - 给文件改名，包括改名时顺带改了别的内容；
 - 只改代码、不改注释，比如把 `x = 1  # note` 改成 `x = 2  # note`；
@@ -43,7 +43,7 @@ repos:
 
 ### 放行
 
-注释去掉开头的 `#` 和空白后，以下表中的前缀开头时放行。除 `KEEP:` 和 `SPDX-License-Identifier:` 外，前缀之后如果还有前面带空白的 `#`（如 `# noqa #说明`），整段不放行：
+注释去掉开头的注释标记和空白后，以下表中的前缀开头时放行。在 Python 和 Shell 中，除 `KEEP:` 和 `SPDX-License-Identifier:` 外，前缀之后如果还有前面带空白的 `#`（如 `# noqa #说明`），整段不放行：
 
 | 范围 | 前缀 |
 | --- | --- |
@@ -60,6 +60,10 @@ repos:
 | Python | `ruff:` |
 | Python | `pylint:` |
 | Shell | `shellcheck` |
+| TypeScript、TSX | `biome-ignore` |
+| TypeScript、TSX | `<reference` |
+
+TypeScript 和 TSX 中，`biome-ignore` 须写明一个或多个以空白分隔的 Biome 规则类别（包括 `format`）和冒号后的理由，例如 `// biome-ignore lint/suspicious/noExplicitAny: 外部接口没有类型`。`<reference` 只放行文件开头、代码之前的三斜线指令，例如 `/// <reference types="vite/client" />`。指令后用空白和 `//` 另写的注释，或另起的块注释，照常检查。
 
 另有以下几条放行：
 
@@ -69,11 +73,41 @@ repos:
 
 ### 什么时候写 `KEEP:`
 
-只有代码、类型、测试都表达不了的外部约束，才用 `KEEP:`，比如硬件固件的 bug、第三方服务的调用限制：`# KEEP: 固件 bug，这里的延时不能去掉`。能用命名、类型或测试表达的内容，都不该写成 `KEEP:`。
+只有代码、类型、测试都表达不了的外部约束，才用 `KEEP:`，比如硬件固件的 bug、第三方服务的调用限制：`# KEEP: 固件 bug，这里的延时不能去掉`。TypeScript 用 `// KEEP: ...` 或 `/* KEEP: ... */`。能用命名、类型或测试表达的内容，都不该写成 `KEEP:`。
 
 ### 检查哪些文件
 
-扩展名为 `.py`、`.pyi` 的文件按 Python 检查，`.sh`、`.bash` 按 Shell 检查。其他文件看第一行的 shebang，解释器是 `python*` 时按 Python，是 `sh`、`bash`、`dash`、`ksh`、`ash` 时按 Shell。YAML、TOML、Dockerfile、JS/TS 等文件不检查。有语法错误或者不是 UTF-8 编码的文件，会给出警告并跳过，不影响退出码。
+扩展名为 `.py`、`.pyi` 的文件按 Python 检查，`.sh`、`.bash` 按 Shell 检查。`.ts`（包括 `.d.ts`）按 TypeScript 检查，`.tsx` 按 TSX 检查。其他文件看第一行的 shebang，解释器是 `python*` 时按 Python，是 `sh`、`bash`、`dash`、`ksh`、`ash` 时按 Shell。独立 JavaScript、HTML、CSS、YAML、TOML 和 Dockerfile 不检查。Python 解析失败或文件不是 UTF-8 编码时，会给出警告并跳过。TypeScript 或 TSX 文件无法解析时，`check` 和 `audit` 报错退出，不会静默跳过。
+
+## 纯前端仓库接入
+
+本机需要安装 [uv](https://docs.astral.sh/uv/getting-started/installation/)，并保证 Git hook 的 `PATH` 上有 `uvx`。以下两种配置任选其一，都会把暂存的 TypeScript 和 TSX 文件传给固定版本的 `no-comments check`。检查使用暂存区的文件内容，未暂存的修改不会影响结果。
+
+使用 Lefthook 时，把以下内容加入 `lefthook.yml`，然后运行 `lefthook install`。在 `exclude` 中填写仓库根目录下的生成目录，例如 `src/generated/`：
+
+```yaml
+# lefthook.yml
+glob_matcher: doublestar
+pre-commit:
+  jobs:
+    - name: no-comments
+      glob: "**/*.{ts,tsx}"
+      exclude:
+        - "src/generated/**"
+      run: uvx --from git+https://github.com/AtticusZeller/no-comments@v0.7.0 no-comments check -- {staged_files}
+```
+
+使用 Husky 时，安装 Husky 并运行 `npx husky init`，然后在 `.husky/pre-commit` 中加入以下命令。生成目录写在 Git 的排除路径规格里；可追加多条 `':(exclude,glob)目录/**'`。没有待检查的文件时不会启动 `uvx`：
+
+```sh
+# .husky/pre-commit
+git diff --cached --name-only --diff-filter=ACMR -z -- \
+  ':(glob)**/*.ts' ':(glob)**/*.tsx' ':(exclude,glob)src/generated/**' | \
+  xargs -0 sh -c '
+    [ "$#" -gt 0 ] || exit 0
+    exec uvx --from git+https://github.com/AtticusZeller/no-comments@v0.7.0 no-comments check -- "$@"
+  ' no-comments
+```
 
 ## 更多用法
 
@@ -92,14 +126,14 @@ pre-commit run no-comments --from-ref origin/main --to-ref HEAD
 `audit` 列出指定路径下所有违规的注释和 docstring，不区分新旧，跳过符号链接及通过符号链接访问的文件。Python 文件的生效编码不是 UTF-8（可带 BOM）时，`audit` 警告并跳过，`strip` 和 `verify-strip` 报错退出：
 
 ```sh
-uv tool install git+https://github.com/AtticusZeller/no-comments@v0.6.0
+uv tool install git+https://github.com/AtticusZeller/no-comments@v0.7.0
 no-comments audit                      # 不给路径时检查 git ls-files 的全部文件
 no-comments audit --allow '^TODO\(' .  # 和 check 用同一套放行规则
 ```
 
 ### 清理存量注释
 
-hook 只拦新增的注释，已有的注释和 docstring 交给 `clean-comments` skill 清理：逐条核实，然后删除、改写成代码、保留为 `KEEP:`，或修掉注释所辩护的临时方案。两者的判断标准都是本文的「规则」一节。仓库还没接入 hook 时，skill 会在清理分支的第一个提交里加上。
+`clean-comments`、`strip` 和 `verify-strip` 只支持 Python 和 Shell。hook 只拦新增的注释，已有的 Python 和 Shell 注释及 docstring 交给 `clean-comments` skill 清理：逐条核实，然后删除、改写成代码、保留为 `KEEP:`，或修掉注释所辩护的临时方案。两者的判断标准都是本文的「规则」一节。仓库还没接入 hook 时，skill 会在清理分支的第一个提交里加上。
 
 ```sh
 npx skills add AtticusZeller/no-comments --skill clean-comments
@@ -110,7 +144,7 @@ skill 需要本机有 uv，它用 uvx 自动获取和自己同版本的 CLI，�
 第一次提交用 `strip` 批量应用审查结果。先保存原始 audit 输出，再从同一目录运行：
 
 ```sh
-no-comments audit > /tmp/audit.txt
+no-comments audit path/to/module.py path/to/script.sh > /tmp/audit.txt
 no-comments strip /tmp/review.txt --audit /tmp/audit.txt
 ```
 

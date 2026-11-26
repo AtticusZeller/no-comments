@@ -17,12 +17,13 @@ class Comment:
     col: int
     text: str
     kind: Kind = Kind.COMMENT
-    content: str = ""
+    content: str | None = None
     end_line: int = 0
+    file_header: bool = False
 
     @property
     def body(self) -> str:
-        if self.kind is Kind.DOCSTRING:
+        if self.content is not None:
             return self.content
         return _MARKERS.sub("", self.text).rstrip()
 

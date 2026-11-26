@@ -1,10 +1,10 @@
 import os
 import re
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
-_HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+_HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 _ESCAPES = {"a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13, '"': 34, "\\": 92}
 _DIFF = (
     "-c",
@@ -19,6 +19,7 @@ _DIFF = (
 _MAX_PATHSPEC_BYTES = 100_000
 
 Refs = tuple[str, str]
+Replacement = tuple[range, range]
 
 
 class GitError(Exception):
@@ -30,6 +31,7 @@ class FileDiff:
     old_path: str | None
     new_path: str | None
     added: set[int] = field(default_factory=set)
+    replaced: list[Replacement] = field(default_factory=list)
 
 
 def diff_range() -> Refs | None:
@@ -40,14 +42,14 @@ def diff_range() -> Refs | None:
     return None
 
 
-def _git_bytes(*args: str, stdin: bytes | None = None) -> bytes:
+def _git_bytes(*args: str, stdin: bytes | None = None, ok: tuple[int, ...] = (0,)) -> bytes:
     try:
         proc = subprocess.run(
-            ["git", "--literal-pathspecs", *args], input=stdin, capture_output=True
+            ["git", "--literal-pathspecs", *args], input=stdin, capture_output=True, check=False
         )
     except FileNotFoundError as exc:
         raise GitError("git executable not found") from exc
-    if proc.returncode != 0:
+    if proc.returncode not in ok:
         message = proc.stderr.decode("utf-8", "replace").strip()
         raise GitError(message or f"git {args[0]} failed")
     return proc.stdout
@@ -83,13 +85,14 @@ def _header_path(raw: str, prefix: str) -> str | None:
     return path.removeprefix(prefix)
 
 
-def _hunk_lines(line: str) -> range:
-    match = _HUNK.match(line)
-    if not match:
-        return range(0)
-    start = int(match.group(1))
-    count = 1 if match.group(2) is None else int(match.group(2))
-    return range(start, start + count)
+def _record_hunk(change: FileDiff, line: str) -> None:
+    if not (match := _HUNK.match(line)):
+        return
+    old_start, old_count, new_start, new_count = (int(group or 1) for group in match.groups())
+    added = range(new_start, new_start + new_count)
+    change.added.update(added)
+    if old_count and new_count:
+        change.replaced.append((range(old_start, old_start + old_count), added))
 
 
 def parse_diff(text: str) -> list[FileDiff]:
@@ -113,7 +116,7 @@ def parse_diff(text: str) -> list[FileDiff]:
                 current = FileDiff(old, new)
                 files.append(current)
             if current is not None and current.new_path is not None:
-                current.added.update(_hunk_lines(line))
+                _record_hunk(current, line)
     return files
 
 
@@ -133,24 +136,63 @@ def changed_paths(target: str) -> list[tuple[str | None, str | None]]:
     return entries
 
 
+def _pathspec(paths: list[str]) -> list[str]:
+    return (
+        ["--", *paths]
+        if sum(len(p.encode("utf-8")) + 1 for p in paths) < _MAX_PATHSPEC_BYTES
+        else []
+    )
+
+
+def _with_shebang(rev: str, paths: list[str]) -> set[str]:
+    args = ["--cached"] if not rev else [rev]
+    output = _git_bytes(
+        "grep",
+        "-G",
+        "--no-color",
+        "--threads=1",
+        "-I",
+        "-l",
+        "-z",
+        "-e",
+        "^#!",
+        *args,
+        *_pathspec(paths),
+        ok=(0, 1),
+    )
+    return {
+        path.removeprefix(f"{rev}:") if rev else path
+        for path in output.decode("utf-8", "replace").split("\0")[:-1]
+    }
+
+
 def collect_changes(
-    refs: Refs | None, relevant: Callable[[str], bool] = lambda _: True
+    refs: Refs | None,
+    relevant: Callable[[str], bool] = lambda _: True,
+    *,
+    shebang_revisions: Sequence[str] = (),
 ) -> list[FileDiff]:
     target = "--cached" if refs is None else f"{refs[0]}...{refs[1]}"
+    pairs = changed_paths(target)
+    names = {path for pair in pairs for path in pair if path is not None}
+    candidates = {path for path in names if relevant(path)}
+    if shebang_revisions and (unknown := sorted(names - candidates)):
+        for rev in shebang_revisions:
+            candidates.update(_with_shebang(rev, unknown))
     paths = sorted(
         {
             path
-            for pair in changed_paths(target)
-            if any(relevant(p) for p in pair if p is not None)
+            for pair in pairs
+            if any(p in candidates for p in pair)
             for path in pair
             if path is not None
         }
     )
     if not paths:
         return []
-    fits = sum(len(p.encode("utf-8")) + 1 for p in paths) < _MAX_PATHSPEC_BYTES
-    pathspec = ["--", *paths] if fits else []
-    return parse_diff(git(*_DIFF, "--src-prefix=a/", "--dst-prefix=b/", "-U0", target, *pathspec))
+    return parse_diff(
+        git(*_DIFF, "--src-prefix=a/", "--dst-prefix=b/", "-U0", target, *_pathspec(paths))
+    )
 
 
 def _is_commit(rev: str) -> bool:
@@ -169,25 +211,32 @@ def base_revisions(refs: Refs | None) -> list[str]:
     return ["HEAD", "MERGE_HEAD"] if _is_commit("MERGE_HEAD") else ["HEAD"]
 
 
-def read_blobs(rev: str, paths: list[str]) -> dict[str, str]:
-    paths = [p for p in paths if "\n" not in p]
-    if not paths:
-        return {}
-    out = _git_bytes("cat-file", "--batch", stdin="".join(f"{rev}:{p}\n" for p in paths).encode())
-    blobs: dict[str, str] = {}
-    pos = 0
+def read_blobs(rev: str, paths: list[str]) -> dict[str, bytes]:
+    blobs: dict[str, bytes] = {}
+    ordinary = []
     for path in paths:
+        if "\n" in path:
+            try:
+                blobs[path] = _git_bytes("cat-file", "blob", f"{rev}:{path}")
+            except GitError:
+                continue
+        else:
+            ordinary.append(path)
+    if not ordinary:
+        return blobs
+    out = _git_bytes(
+        "cat-file", "--batch", stdin="".join(f"{rev}:{p}\n" for p in ordinary).encode()
+    )
+    pos = 0
+    for path in ordinary:
         end = out.index(b"\n", pos)
         header = out[pos:end]
         pos = end + 1
         if header.endswith((b" missing", b" ambiguous")):
             continue
         _, kind, size = header.rsplit(b" ", 2)
-        data = out[pos : pos + int(size)]
-        pos += int(size) + 1
+        length = int(size)
         if kind == b"blob":
-            try:
-                blobs[path] = data.decode("utf-8-sig")
-            except UnicodeDecodeError:
-                pass
+            blobs[path] = out[pos : pos + length]
+        pos += length + 1
     return blobs

@@ -19,6 +19,7 @@
 | `langs/__init__.py` | `Comment`、`Kind`、`ParseError`，以及把一行里接连的几段注释拆开的 `comment_segments` |
 | `langs/python.py` | 用 `tokenize` 提取注释，用 `ast` 提取单独成句的字符串 |
 | `langs/shell.py` | 用 tree-sitter-bash 提取 `comment` 节点 |
+| `langs/typescript.py` | 用 Tree-sitter 的 TypeScript 和 TSX 语法提取 `comment` 节点，识别指令和注释范围 |
 
 ### 数据流
 
@@ -26,7 +27,7 @@
 
 1. `collect_changes` 先用 `--name-status` 列出改动文件，再只对支持语言的文件做内容 diff，得到新增行号和旧路径。
 2. `base_revisions` 确定旧版本。
-3. 这次改动涉及的所有支持语言的文件，新版本从磁盘读取，旧版本用 `read_blobs` 一次读出，都用同一个 `extract()` 提取注释。
+3. 这次改动涉及的所有支持语言的文件，新版本从暂存区或 `TO` 批量读取，旧版本从基准提交批量读取，都用同一个 `extract()` 提取注释。
 4. `new_comments` 按出现次数选出新增项，只保留传入文件里的，再交给 `is_allowed` 过滤。
 5. `report` 输出结果。
 
@@ -40,17 +41,17 @@
   - 暂存区模式用 `HEAD`；还没有任何提交时，旧版本为空。
   - 范围模式用 `git merge-base FROM TO`，和 `FROM...TO` 的 diff 基准一致。
   - 暂存区模式下如果正在 merge，取 `HEAD` 和 `MERGE_HEAD` 两边的并集，同一文本的次数取较大值，这样对方分支带来的注释不算新增。
-- 比较的依据是出现次数，范围是整个改动：把这次 diff 涉及的所有文件的旧版本合起来计数，新版本同样合起来计数。同一文本多出 k 次，就按路径和位置顺序在新增行上报告前 k 条。合起来算是为了让拆分、合并文件和 git 没识别出的改名不产生误报；用次数而不用集合，是为了新加一条和已有注释文本相同的注释时也能报出来。pre-commit 可能把文件分给多个进程，每个进程都按整个改动计算、只输出自己拿到的文件，所以结果和分组无关。
+- 比较的依据是出现次数，范围是整个改动：把这次 diff 涉及的所有文件的旧版本合起来计数，新版本同样合起来计数。同一文本多出 k 次，就在新增行上按路径和位置顺序报告至多 k 条；同一文件（含改名）的 diff 替换块中按规范化文本逐一配对旧注释和新注释，不依赖块内行号相同；配对的注释视为保留。合起来算是为了让拆分、合并文件和 git 没识别出的改名不产生误报；用次数而不用集合，是为了新加一条和已有注释文本相同的注释时也能报出来。pre-commit 可能把文件分给多个进程，每个进程都按整个改动计算、只输出自己拿到的文件，所以结果和分组无关。
 - 比较前先规范化文本。注释取去掉开头所有 `#` 和空白后的内容，这样取消注释一段代码时其中原有的注释不算新增；docstring 用 `inspect.cleandoc` 规范缩进，挪进类里重新缩进不算新增。
 - 一条注释 token 按「前面有两个以上空白的 `#`」或「前后都是空白的 `#`」拆成几段，逐段放行、逐段比较，堵住 `# noqa  # 说明` 这种借工具指令夹带说明的写法。去掉 `#` 和空白后为空的段并入下一段，避免把 `#   # 注释` 拆出空注释。工具指令前缀只在段内没有其他前面带空白的 `#` 时放行。
 - `ast.parse` 时屏蔽 `SyntaxWarning`，用户代码里的非法转义不会在 hook 输出里留下无文件名的警告。
-- 按语法识别注释，不用正则：Python 注释用 `tokenize`，单独成句的字符串用 `ast`，Shell 用 tree-sitter。这样字符串和 heredoc 里的 `#` 不会被误判。
-- `check` 和 `audit` 解析失败时给出警告并跳过整个文件，不影响退出码。旧版本解析失败时，按旧版本为空处理。`audit` 跳过符号链接，`strip` 拒绝经过符号链接的路径，并且在所有文件核对完成前不落盘。
+- 按语法识别注释，不用正则：Python 注释用 `tokenize`，单独成句的字符串用 `ast`，Shell、TypeScript 和 TSX 用 Tree-sitter。字符串、heredoc、模板和 JSX 文本里的注释符号不参与提取。TypeScript 的多行块注释按整个行号范围匹配新增行，输出保持每条违规一行。
+- `check` 和 `audit` 遇到无法解析的目标 TypeScript 或 TSX 文件时退出 2。TypeScript 兼容解析在任何嵌套层级查找 Tree-sitter 定位的模块修饰符和属性。先用 import 语法核验属性，再在用于解析的副本中掩去兼容内容，保留注释及其字节坐标；文件必须重新解析成功，且属性须属于模块声明。Python 解析失败给出警告并跳过。旧版本解析失败时按旧版本为空处理。`audit` 跳过符号链接，`strip` 拒绝经过符号链接的路径，并且在所有文件核对完成前不落盘。
 - hook 不做自动修复，也不支持配置文件；要排除路径，用 pre-commit 的 `exclude`。
 
 ### verify-strip
 
-`verify-strip` 读取 base 版本（`git cat-file`）和工作区版本，两边做同样的去注释处理后比较，复用 hook 的解析方式，不另写一套：
+`verify-strip` 和 `strip` 只支持 Python 和 Shell。`verify-strip` 读取 base 版本（`git cat-file`）和工作区版本，两边做同样的去注释处理后比较，复用 hook 的解析方式，不另写一套：
 
 - Python：`ast.parse` 后去掉所有单独成句的字符串，以及 `pass` 和单独的 `...`，再比较 `ast.dump`。`ast` 本身不含注释；去掉 `pass` 和 `...` 是因为删掉唯一的 docstring 后要补一个占位语句。删掉的 docstring 按「所属的类或函数名」比对两边，列成提示。
 - Shell：用 `langs/shell.py` 定位注释，去掉注释和不影响语法的行尾空白及空行，保留被转义的空白和终止续行的空行，再逐行比较。
@@ -85,7 +86,7 @@ pre-commit install
 每条约束后面注明由什么来保证：
 
 - 本仓库不写注释和 docstring。由 `test_repository_source_has_no_comments` 和 pre-commit hook 强制。
-- 运行依赖只有 `tree-sitter` 和 `tree-sitter-bash`。由 `tests/test_docs.py` 强制。
+- 运行依赖只有 `tree-sitter`、`tree-sitter-bash` 和 `tree-sitter-typescript`。由 `tests/test_docs.py` 强制。
 - 改放行规则时，同时改 `allow.py`、README 的放行表和对应测试。由 `tests/test_docs.py` 强制两边一致。
 - 改规则编号时，同时改 `report.CODES` 和 README。由 `tests/test_docs.py` 强制。
 - 新增语言时：在 `langs/` 下加一个模块实现 `extract(source: str) -> list[Comment]`，再更新 `detect.EXTENSIONS`、`.pre-commit-hooks.yaml` 里的 `types_or`、README 中支持的语言，并补测试。靠评审保证。

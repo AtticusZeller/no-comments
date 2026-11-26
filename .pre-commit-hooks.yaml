@@ -1,6 +1,6 @@
 - id: no-comments
   name: no-comments
-  description: Reject code comments on newly added lines (Python, Shell).
+  description: Reject newly added comments (Python, Shell, TypeScript, TSX).
   entry: no-comments check
   language: python
-  types_or: [python, pyi, shell]
+  types_or: [python, pyi, shell, ts, tsx]

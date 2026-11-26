@@ -211,15 +211,24 @@ def pre_commit(repo, home, *args):
 
 
 @needs_pre_commit
-def test_try_repo_blocks_violation_then_passes(repo, pre_commit_home):
-    repo.write("a.py", "x = 1\n")
+@pytest.mark.parametrize(
+    "name, source, marker",
+    [
+        ("a.py", "x = 1\n", "#"),
+        ("a.ts", "const x = 1;\n", "//"),
+        ("env.d.ts", "declare const env: string;\n", "//"),
+        ("a.tsx", "const view = <p />;\n", "//"),
+    ],
+)
+def test_try_repo_blocks_violation_then_passes(repo, pre_commit_home, name, source, marker):
+    repo.write(name, source)
     repo.commit()
-    repo.stage("a.py", "x = 1\n# 修复 bug\n")
+    repo.stage(name, f"{source}{marker} 修复 bug\n")
     result = pre_commit(repo, pre_commit_home, "try-repo", str(ROOT), "no-comments")
     assert result.returncode == 1, result.stdout + result.stderr
-    assert "a.py:2:1: NC001 comment not allowed: # 修复 bug" in result.stdout
+    assert f"{name}:2:1: NC001 comment not allowed: {marker} 修复 bug" in result.stdout
     assert HINT in result.stdout
-    repo.stage("a.py", "x = 1\ny = 2\n")
+    repo.stage(name, source + "\n")
     result = pre_commit(repo, pre_commit_home, "try-repo", str(ROOT), "no-comments")
     assert result.returncode == 0, result.stdout + result.stderr
 
@@ -531,3 +540,35 @@ def test_shape_docstring_has_no_shape_hint(repo, capsys):
     repo.stage("a.py", '"""(B, N, 3)"""\n')
     assert main(["check", "a.py"]) == 1
     assert SHAPE_HINT not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "name, prefix, code, comment",
+    [
+        ("-dash.d.ts", "", "declare const answer: number;\n", "// staged violation\n"),
+        ("a.py", "", "x = 1\n", "# staged violation\n"),
+        ("bin/tool", "#!/bin/sh\n", "echo ok\n", "# staged violation\n"),
+    ],
+)
+def test_check_uses_index_when_file_is_partially_staged(repo, capsys, name, prefix, code, comment):
+    repo.write(name, prefix + code)
+    repo.commit()
+    repo.stage(name, prefix + comment + code)
+    repo.write(name, code)
+    assert main(["check", "--", name]) == 1
+    assert "NC001 comment not allowed: " + comment.strip() in capsys.readouterr().out
+    repo.stage(name, prefix + code + "\n")
+    repo.write(name, prefix + code + comment)
+    assert main(["check", "--", name]) == 0
+
+
+def test_check_range_reads_to_ref_not_worktree(repo, monkeypatch, capsys):
+    repo.write("a.ts", "const a = 1;\n")
+    base = repo.commit()
+    repo.write("a.ts", "const a = 2; // branch comment\n")
+    tip = repo.commit()
+    repo.write("a.ts", "const a = 2;\n")
+    monkeypatch.setenv("PRE_COMMIT_FROM_REF", base)
+    monkeypatch.setenv("PRE_COMMIT_TO_REF", tip)
+    assert main(["check", "a.ts"]) == 1
+    assert "// branch comment" in capsys.readouterr().out
