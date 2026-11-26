@@ -36,6 +36,8 @@ def test_tree_sitter_extracts_only_real_comments():
         ("// KEEP: reason", [True]),
         ("/** KEEP: reason */", [True]),
         ("// biome-ignore lint/suspicious/noExplicitAny: reason", [True]),
+        ("// biome-ignore format: preserve this layout", [True]),
+        ("// biome-ignore format/group: invalid", [False]),
         ("/* biome-ignore lint: https://example.com */ /* extra */", [True, False]),
         ("// biome-ignore lint: https://example.com // extra", [True, False]),
         ("// biome-ignore lint: // extra", [False, False]),

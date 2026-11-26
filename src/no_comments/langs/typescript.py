@@ -14,7 +14,7 @@ BIOME_PREFIX = "biome-ignore"
 REFERENCE_PREFIX = "<reference"
 _BIOME = re.compile(
     rf"{BIOME_PREFIX}"
-    r"[ \t]+(?:lint|assist|syntax)(?:/[\w-]+){0,2}"
+    r"[ \t]+(?:format|(?:lint|assist|syntax)(?:/[\w-]+){0,2})"
     r"(?:\([^\r\n()]+\))?[ \t]*:[ \t]*\S"
 )
 _ATTRIBUTE = re.compile(r"""([a-z-]+)[ \t]*=[ \t]*(?:"([^"\r\n]*)"|'([^'\r\n]*)')""")

@@ -63,7 +63,7 @@ repos:
 | TypeScript、TSX | `biome-ignore` |
 | TypeScript、TSX | `<reference` |
 
-TypeScript 和 TSX 中，`biome-ignore` 须写明 Biome 规则类别和冒号后的理由，例如 `// biome-ignore lint/suspicious/noExplicitAny: 外部接口没有类型`。`<reference` 只放行文件开头、代码之前的三斜线指令，例如 `/// <reference types="vite/client" />`。指令后用空白和 `//` 另写的注释，或另起的块注释，照常检查。
+TypeScript 和 TSX 中，`biome-ignore` 须写明 Biome 规则类别（包括 `format`）和冒号后的理由，例如 `// biome-ignore lint/suspicious/noExplicitAny: 外部接口没有类型`。`<reference` 只放行文件开头、代码之前的三斜线指令，例如 `/// <reference types="vite/client" />`。指令后用空白和 `//` 另写的注释，或另起的块注释，照常检查。
 
 另有以下几条放行：
 
