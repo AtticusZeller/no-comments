@@ -148,21 +148,6 @@ def test_typescript_parse_error_does_not_pass(repo, capsys, command):
     assert "broken.ts: could not parse TypeScript or TSX" in capsys.readouterr().err
 
 
-def test_strip_leaves_typescript_unsupported(repo, capsys):
-    source = "const n = 1; // note\n"
-    file = repo.write("a.ts", source)
-    repo.commit()
-    assert main(["audit", "a.ts"]) == 0
-    repo.write("audit.txt", capsys.readouterr().out)
-    repo.write("review.txt", "a.ts:1:14 | DELETE | redundant | - | -\n")
-    assert main(["strip", "review.txt", "--audit", "audit.txt"]) == 2
-    assert "not a supported source file" in capsys.readouterr().err
-    assert file.read_text() == source
-    repo.write("a.ts", "const n = 2;\n")
-    assert main(["verify-strip"]) == 0
-    assert main(["verify-strip", "a.ts"]) == 0
-
-
 @pytest.mark.parametrize(
     "statement",
     [

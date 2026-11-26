@@ -7,12 +7,11 @@ from pathlib import Path
 
 from no_comments.detect import (
     EXTENSIONS,
-    STRIP_LANGUAGES,
     effective_shebang,
     shebang_language,
 )
 from no_comments.diff import _git_bytes, git
-from no_comments.langs import ParseError, python, shell
+from no_comments.langs import ParseError, python, shell, typescript
 
 DOCSTRING_HINT = (
     "删掉的 docstring 可能被 typer、click、FastAPI 等框架当作帮助文本或接口描述读取（`__doc__`），"
@@ -130,7 +129,7 @@ def verify(base: str, files: Sequence[str]) -> StripReport:
         work_bytes = disk.read_bytes() if disk.is_file() else None
         base_bytes = _base_blob(base, path)
         lang = _language(path, base_bytes, work_bytes)
-        if lang not in STRIP_LANGUAGES:
+        if lang is None:
             continue
         try:
             if lang == "python":
@@ -152,8 +151,12 @@ def verify(base: str, files: Sequence[str]) -> StripReport:
                         for name, line in docstring_owners(base_source).items()
                         if name not in kept
                     ]
-            else:
+            elif lang == "shell":
                 same = shell.code_lines(base_source) == shell.code_lines(work_source)
+            else:
+                same = typescript.code_signature(base_source, lang) == typescript.code_signature(
+                    work_source, lang
+                )
         except ParseError as exc:
             raise ParseError(f"{path}: {exc}") from exc
         if not same:

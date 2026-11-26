@@ -1,5 +1,6 @@
 import re
 from collections.abc import Iterator
+from dataclasses import dataclass
 
 import tree_sitter_typescript
 from tree_sitter import Language, Node, Parser, Query, QueryCursor
@@ -18,6 +19,21 @@ _BIOME = re.compile(rf"{BIOME_PREFIX}(?:[ \t]+{_BIOME_SELECTOR})+[ \t]*:[ \t]*\S
 _ATTRIBUTE = re.compile(r"""([a-z-]+)[ \t]*=[ \t]*(?:"([^"\r\n]*)"|'([^'\r\n]*)')""")
 _REFERENCE = re.compile(rf"{REFERENCE_PREFIX}(?:[ \t]+{_ATTRIBUTE.pattern})+[ \t]*/>")
 _BLOCK_MARGIN = re.compile(r"^[ \t]*\* ?", re.MULTILINE)
+
+
+_LINE_BREAK = re.compile(rb"[\r\n]|\xe2\x80[\xa8\xa9]")
+_NO_LINE_BREAK_AFTER = {"return", "throw", "break", "continue", "yield", "async"}
+_NO_LINE_BREAK_BEFORE = {"++", "--", "=>"}
+TS_LANGUAGES = {"typescript", "tsx"}
+Syntax = tuple[tuple[str, bytes], ...]
+
+
+@dataclass(frozen=True)
+class CommentSpan:
+    comment: Comment
+    start: int
+    end: int
+    wrapper: tuple[int, int] | None = None
 
 
 class TypeScriptParseError(ParseError):
@@ -133,7 +149,7 @@ def _attribute_end(tokens: list[Node], opening: int) -> int | None:
     return None
 
 
-def _mask_attributes(parser: Parser, query: Query, clause: bytes) -> bytes | None:
+def _mask_attributes(parser: Parser, query: Query, clause: bytes) -> tuple[bytes, Syntax] | None:
     prefix = b'import "module" '
     root = parser.parse(prefix + clause + b";").root_node
     if root.has_error or len(root.named_children) != 1:
@@ -161,26 +177,33 @@ def _mask_attributes(parser: Parser, query: Query, clause: bytes) -> bytes | Non
     for comment in QueryCursor(query).captures(root).get("comment", []):
         start, end = comment.start_byte - len(prefix), comment.end_byte - len(prefix)
         masked[start:end] = clause[start:end]
-    return bytes(masked)
+    tokens = tuple(
+        (token.type, clause[token.start_byte - len(prefix) : token.end_byte - len(prefix)])
+        for token in _tokens(attribute)
+    )
+    return bytes(masked), tokens
 
 
 def _recover_attributes(
     root: Node, parser: Parser, query: Query, data: bytes, adjusted: bytearray
-) -> list[tuple[int, int]]:
+) -> dict[tuple[int, int], Syntax]:
     tokens = list(_tokens(root))
-    sources = []
+    sources = {}
     for i, (source, keyword, opening) in enumerate(
         zip(tokens, tokens[1:], tokens[2:], strict=False)
     ):
         if source.type != "string" or keyword.type != "with" or opening.type != "{":
             continue
+        if keyword.parent is not None and keyword.parent.type == "import_attribute":
+            continue
         end = _attribute_end(tokens, i + 2)
         if end is None:
             continue
         start = keyword.start_byte
-        if (masked := _mask_attributes(parser, query, data[start:end])) is not None:
+        if (result := _mask_attributes(parser, query, data[start:end])) is not None:
+            masked, syntax = result
             adjusted[start:end] = masked
-            sources.append((source.start_byte, source.end_byte))
+            sources[(source.start_byte, source.end_byte)] = syntax
     return sources
 
 
@@ -193,7 +216,7 @@ def _is_module_source(root: Node, start: int, end: int) -> bool:
     )
 
 
-def _parse(data: bytes, language: Language) -> Node:
+def _parse(data: bytes, language: Language, extras: dict[int, Syntax]) -> Node:
     parser = _PARSERS[language]
     root = parser.parse(data).root_node
     if not root.has_error:
@@ -209,17 +232,30 @@ def _parse(data: bytes, language: Language) -> Node:
                 adjusted[token.start_byte : token.end_byte] = b" " * (
                     token.end_byte - token.start_byte
                 )
+                extras[node.start_byte] = (
+                    ("module_modifier", data[token.start_byte : token.end_byte]),
+                )
                 changed = True
         if changed:
             root = parser.parse(bytes(adjusted)).root_node
     if root.has_error or not all(_is_module_source(root, *source) for source in sources):
         raise TypeScriptParseError("could not parse TypeScript or TSX with Tree-sitter")
+    extras.update({end: syntax for (_, end), syntax in sources.items()})
     return root
 
 
-def _extract(source: str, language: Language) -> list[Comment]:
-    data = source.encode("utf-8")
-    root = _parse(data, language)
+def _empty_jsx(node: Node) -> bool:
+    return (
+        node.type == "jsx_expression"
+        and node.parent is not None
+        and node.parent.type == "jsx_element"
+        and all(child.type == "comment" for child in node.named_children)
+    )
+
+
+def comment_spans(data: bytes, lang: str) -> list[CommentSpan]:
+    language = _TSX if lang == "tsx" else _TS
+    root = _parse(data, language, {})
     lines = data.split(b"\n")
     header_end = next(
         (
@@ -235,20 +271,79 @@ def _extract(source: str, language: Language) -> list[Comment]:
         row, byte_col = node.start_point
         col = len(lines[row][:byte_col].decode("utf-8")) + 1
         text = data[node.start_byte : node.end_byte].decode("utf-8")
+        parent = node.parent
+        wrapper = (
+            (parent.start_byte, parent.end_byte)
+            if parent is not None and _empty_jsx(parent)
+            else None
+        )
         if text.startswith("//"):
-            comments.extend(_line_comments(row + 1, col, text, node.start_byte < header_end))
+            for item in _line_comments(row + 1, col, text, node.start_byte < header_end):
+                start = node.start_byte + len(text[: item.col - col].encode())
+                comments.append(CommentSpan(item, start, start + len(item.text.encode()), wrapper))
         else:
             body = _BLOCK_MARGIN.sub("", text[2:-2])
             content = "\n".join(line.strip() for line in body.splitlines()).strip()
-            comments.append(
-                Comment(row + 1, col, text, content=content, end_line=node.end_point.row + 1)
-            )
+            item = Comment(row + 1, col, text, content=content, end_line=node.end_point.row + 1)
+            comments.append(CommentSpan(item, node.start_byte, node.end_byte, wrapper))
     return comments
 
 
 def extract(source: str) -> list[Comment]:
-    return _extract(source, _TS)
+    return [span.comment for span in comment_spans(source.encode(), "typescript")]
 
 
 def extract_tsx(source: str) -> list[Comment]:
-    return _extract(source, _TSX)
+    return [span.comment for span in comment_spans(source.encode(), "tsx")]
+
+
+def _jsx_text(text: bytes) -> bytes:
+    lines = re.split(rb"\r\n|[\r\n]", text)
+    if len(lines) == 1:
+        return lines[0]
+    cleaned = [
+        lines[0].rstrip(b" \t"),
+        *(line.strip(b" \t") for line in lines[1:-1]),
+        lines[-1].lstrip(b" \t"),
+    ]
+    return b" ".join(line for line in cleaned if line)
+
+
+def code_signature(source: str, lang: str) -> Syntax:
+    data = source.encode()
+    extras: dict[int, Syntax] = {}
+    root = _parse(data, _TSX if lang == "tsx" else _TS, extras)
+    result: list[tuple[str, bytes]] = []
+    previous: Node | None = None
+    stack: list[tuple[Node, bool]] = [(root, False)]
+    while stack:
+        node, end = stack.pop()
+        if node.type == "comment" or _empty_jsx(node):
+            continue
+        if node.type == "jsx_text":
+            if text := _jsx_text(data[node.start_byte : node.end_byte]):
+                result.append(("jsx_text", text))
+            previous = None
+            continue
+        if end:
+            result.append(("end", b""))
+        elif node.type == "import_attribute":
+            result.extend((t.type, data[t.start_byte : t.end_byte]) for t in _tokens(node))
+        elif node.type != "program" and (not node.child_count or node.type in {"string", "regex"}):
+            if (
+                previous is not None
+                and (previous.type in _NO_LINE_BREAK_AFTER or node.type in _NO_LINE_BREAK_BEFORE)
+                and _LINE_BREAK.search(data, previous.end_byte, node.start_byte)
+            ):
+                result.append(("restricted_line_break", b""))
+            previous = node
+            result.append((node.type, data[node.start_byte : node.end_byte]))
+            if node.type == "string":
+                result.extend(extras.get(node.end_byte, ()))
+        else:
+            result.append((node.type, b""))
+            if node.type in {"import_statement", "export_statement"}:
+                result.extend(extras.get(node.start_byte, ()))
+            stack.append((node, True))
+            stack.extend((child, False) for child in reversed(node.children))
+    return tuple(result)

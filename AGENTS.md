@@ -51,11 +51,12 @@
 
 ### verify-strip
 
-`verify-strip` 和 `strip` 只支持 Python 和 Shell。`verify-strip` 读取 base 版本（`git cat-file`）和工作区版本，两边做同样的去注释处理后比较，复用 hook 的解析方式，不另写一套：
+`verify-strip` 和 `strip` 支持 Python、Shell、TypeScript 和 TSX。`verify-strip` 读取 base 版本（`git cat-file`）和工作区版本，两边做同样的去注释处理后比较，复用 hook 的解析方式，不另写一套：
 
 - Python：`ast.parse` 后去掉所有单独成句的字符串，以及 `pass` 和单独的 `...`，再比较 `ast.dump`。`ast` 本身不含注释；去掉 `pass` 和 `...` 是因为删掉唯一的 docstring 后要补一个占位语句。删掉的 docstring 按「所属的类或函数名」比对两边，列成提示。
 - Shell：用 `langs/shell.py` 定位注释，去掉注释和不影响语法的行尾空白及空行，保留被转义的空白和终止续行的空行，再逐行比较。
 - `strip` 和 `verify-strip` 在原始字节上比较生效的 shebang；Python 文件还用 `tokenize.detect_encoding` 检查生效的编码声明。
+- TypeScript 和 TSX：复用注释范围与兼容语法树，比较忽略注释后的节点结构和 token，保留模块修饰符、属性、字面量、JSX 文本子节点和会改变语法的换行。`strip` 只编辑注释跨度；遇到纯注释的 JSX 花括号，仅在内部注释全部删除时移除外层，随后用同一比较验证。
 - 文件一侧不存在时按空文件处理，所以新增或删除含代码的文件算代码改动。改名用 `--no-renames` 拆成删除和新增。
 
 ### clean-comments skill

@@ -2,7 +2,6 @@ import os
 import re
 from pathlib import Path
 
-STRIP_LANGUAGES = {"python", "shell"}
 EXTENSIONS = {
     ".py": "python",
     ".pyi": "python",

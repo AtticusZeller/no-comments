@@ -7,8 +7,17 @@ from dataclasses import dataclass
 from itertools import accumulate
 from pathlib import Path
 
-from no_comments.detect import STRIP_LANGUAGES, detect_language, through_symlink
-from no_comments.langs import Comment, Kind, ParseError, comment_segments, python, shell
+from no_comments.allow import is_allowed
+from no_comments.detect import detect_language, through_symlink
+from no_comments.langs import (
+    Comment,
+    Kind,
+    ParseError,
+    comment_segments,
+    python,
+    shell,
+    typescript,
+)
 from no_comments.report import format_violation
 from no_comments.strip import changed_header, python_code
 
@@ -53,10 +62,6 @@ def read_review(table: Path) -> dict[Path, list[Review]]:
             review = Review(name, int(line), int(col), parts[1], parts[4].strip())
         except ValueError as exc:
             raise ParseError(f"{table}:{number}: invalid line or column") from exc
-        if review.decision == "KEEP" and not (
-            review.suggestion.startswith("# KEEP: ") and review.suggestion[8:].strip()
-        ):
-            raise ParseError(f"{review.location}: expected a '# KEEP: …' suggestion")
         path = Path(name).absolute()
         if through_symlink(path):
             raise ParseError(f"{review.location}: symbolic links are not supported")
@@ -230,7 +235,7 @@ def docstring_edits(
 
 
 def checked_actions(
-    found: dict[tuple[int, int], Comment], reviews: list[Review], audit: dict[str, str]
+    found: dict[tuple[int, int], Comment], reviews: list[Review], audit: dict[str, str], lang: str
 ) -> dict[tuple[int, int], Review]:
     actions = {}
     for review in reviews:
@@ -238,16 +243,150 @@ def checked_actions(
         comment = found.get(key)
         if comment is None or audit.get(review.location) != format_violation(review.name, comment):
             raise ParseError(f"{review.location}: does not match the saved audit output")
-        if review.decision == "KEEP" and len(comment_segments(1, 1, review.suggestion)) != 1:
-            raise ParseError(f"{review.location}: KEEP suggestion must be a single comment segment")
+        if lang in typescript.TS_LANGUAGES:
+            if is_allowed(lang, comment):
+                raise ParseError(f"{review.location}: comment is allowed by default")
+            if review.decision == "KEEP":
+                ts_keep_body(review)
+        elif review.decision == "KEEP":
+            if not (review.suggestion.startswith("# KEEP: ") and review.suggestion[8:].strip()):
+                raise ParseError(f"{review.location}: expected a '# KEEP: …' suggestion")
+            if len(comment_segments(1, 1, review.suggestion)) != 1:
+                raise ParseError(
+                    f"{review.location}: KEEP suggestion must be a single comment segment"
+                )
         if review.decision in _APPLY:
             actions[key] = review
     return actions
 
 
+def ts_keep_body(review: Review) -> str:
+    text = review.suggestion
+    if text.startswith("// "):
+        body = text[3:]
+    elif text.startswith("/* ") and text.endswith(" */"):
+        body = text[3:-3]
+    else:
+        body = ""
+    if (
+        not body.startswith("KEEP: ")
+        or not body[6:].strip()
+        or re.search(r"[\r\n\u2028\u2029]|\*/", body)
+    ):
+        raise ParseError(f"{review.location}: expected a single TypeScript KEEP comment")
+    return body
+
+
+_TS_NEWLINE = re.compile(rb"\r\n|[\r\n]|\xe2\x80[\xa8\xa9]")
+
+
+def _ts_edit(data: bytes, span: typescript.CommentSpan, action: Review) -> tuple[int, int, bytes]:
+    start, end = span.start, span.end
+    original = data[start:end]
+    newline = _TS_NEWLINE.search(original)
+    line_comment = original.startswith(b"//")
+    line_end = _TS_NEWLINE.search(data, end)
+    suffix_end = line_end.start() if line_end is not None else len(data)
+    if action.decision == "KEEP":
+        body = ts_keep_body(action).encode()
+        if line_comment:
+            return start, end, b"// " + body
+        separator = newline[0] if newline and data[end:suffix_end].strip(b" \t") else b" "
+        return start, end, b"/* " + body + separator + b"*/"
+    if span.wrapper is not None:
+        return start, end, b""
+    if not data[end:suffix_end].strip(b" \t"):
+        while start and data[start - 1 : start] in (b" ", b"\t"):
+            start -= 1
+        return start, suffix_end, newline[0] if newline else b""
+    if newline:
+        return start, end, newline[0]
+    if (
+        start
+        and end < len(data)
+        and data[start - 1 : start] not in b" \t\r\n"
+        and data[end : end + 1] not in b" \t\r\n"
+    ):
+        return start, end, b" "
+    return start, end, b""
+
+
+def _apply_ts_edits(data: bytes, edits: list[tuple[int, int, bytes]]) -> bytes:
+    parts = []
+    pos = row = 0
+    affected: set[int] = set()
+    for start, end, replacement in sorted(edits):
+        intact = data[pos:start]
+        row += len(_TS_NEWLINE.findall(intact))
+        end_row = row + len(_TS_NEWLINE.findall(replacement))
+        affected.update(range(row, end_row + 1))
+        parts.extend((intact, replacement))
+        row = end_row
+        pos = end
+    parts.append(data[pos:])
+    output = b"".join(parts)
+    lines = _TS_NEWLINE.split(output)
+    endings = [*_TS_NEWLINE.findall(output), b""]
+    return b"".join(
+        line + ending
+        for i, (line, ending) in enumerate(zip(lines, endings, strict=True))
+        if i not in affected or line.strip(b" \t")
+    )
+
+
+def rewrite_typescript(
+    path: Path, reviews: list[Review], audit: dict[str, str], data: bytes, source: str, lang: str
+) -> bytes | None:
+    original = source.encode()
+    try:
+        spans = typescript.comment_spans(original, lang)
+        located = {(span.comment.line, span.comment.col): span for span in spans}
+        actions = checked_actions(
+            {key: span.comment for key, span in located.items()}, reviews, audit, lang
+        )
+        if not actions:
+            return None
+        wrappers: dict[tuple[int, int], list[tuple[int, int]]] = defaultdict(list)
+        for key, span in located.items():
+            if span.wrapper is not None:
+                wrappers[span.wrapper].append(key)
+        remove_wrappers = {
+            wrapper
+            for wrapper, keys in wrappers.items()
+            if all(key in actions and actions[key].decision == "DELETE" for key in keys)
+        }
+        edits = [(start, end, b"") for start, end in remove_wrappers]
+        for key, action in actions.items():
+            span = located[key]
+            if span.wrapper not in remove_wrappers:
+                edits.append(_ts_edit(original, span, action))
+        rewritten = _apply_ts_edits(original, edits)
+        output = (codecs.BOM_UTF8 if data.startswith(codecs.BOM_UTF8) else b"") + rewritten
+        if reason := changed_header(data, output, lang):
+            raise ParseError(reason)
+        if typescript.code_signature(source, lang) != typescript.code_signature(
+            rewritten.decode(), lang
+        ):
+            raise ParseError("rewriting would change code")
+        expected = Counter(span.comment.key for key, span in located.items() if key not in actions)
+        expected.update(
+            (Kind.COMMENT, ts_keep_body(action))
+            for action in actions.values()
+            if action.decision == "KEEP"
+        )
+        if (
+            Counter(span.comment.key for span in typescript.comment_spans(rewritten, lang))
+            != expected
+        ):
+            raise ParseError("rewritten comments do not match the review")
+        return output
+    except ParseError as exc:
+        raise ParseError(f"{path}: {exc}") from exc
+
+
 def rewrite(path: Path, reviews: list[Review], audit: dict[str, str]) -> bytes | None:
     lang = detect_language(path)
-    if lang not in STRIP_LANGUAGES:
+    if lang is None:
         raise ParseError(f"{reviews[0].location}: not a supported source file")
     data = path.read_bytes()
     try:
@@ -258,10 +397,12 @@ def rewrite(path: Path, reviews: list[Review], audit: dict[str, str]) -> bytes |
         raise ParseError(f"{path}: {exc}") from exc
     except UnicodeDecodeError as exc:
         raise ParseError(f"{path}: not UTF-8") from exc
+    if lang in typescript.TS_LANGUAGES:
+        return rewrite_typescript(path, reviews, audit, data, source, lang)
     extract = python.extract if lang == "python" else shell.extract
     comments = extract(source)
     found = {(c.line, c.col): c for c in comments}
-    actions = checked_actions(found, reviews, audit)
+    actions = checked_actions(found, reviews, audit, lang)
     if not actions:
         return None
     lines = re.findall(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+", source)
