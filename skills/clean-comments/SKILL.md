@@ -9,7 +9,7 @@ no-comments hook 拦住新增的注释，这个 skill 清理已有的注释和 d
 
 下文的 `references/`、`scripts/` 都相对本 skill 所在目录。
 
-下文所有 `no-comments` 都是指 `uvx --from git+https://github.com/AtticusZeller/no-comments@v0.7.0 no-comments`，版本号和 no-comments 仓库 `pyproject.toml` 的 `version` 一致，skill 和 CLI 随同一个 tag 发布。版本固定后 uvx 只在第一次运行时安装，之后走缓存。
+下文所有 `no-comments` 都是指 `uvx --from git+https://github.com/AtticusZeller/no-comments@v0.8.0 no-comments`，版本号和 no-comments 仓库 `pyproject.toml` 的 `version` 一致，skill 和 CLI 随同一个 tag 发布。版本固定后 uvx 只在第一次运行时安装，之后走缓存。
 
 ## 0. 前置检查
 
@@ -20,7 +20,7 @@ no-comments hook 拦住新增的注释，这个 skill 清理已有的注释和 d
 - 仓库用 typer、click、argparse 等框架提供命令行时，导出全部命令和子命令的 `--help` 输出，存到仓库外的临时目录，第 4、5 步之后各对比一次。
 
 ## 1. 列清单
-本 skill 只处理 Python 和 Shell。混合语言仓库要把这些语言的文件逐个传给 audit，不要传包含 TypeScript 或 TSX 的目录。
+本 skill 处理 Python、Shell、TypeScript（含 `.d.ts`）和 TSX。审查前先根据仓库的生成配置和 hook 排除规则筛出源码文件，显式传给 `audit`；它不会读取 hook 的 `exclude`。不要清理生成的 API 客户端、路由树、声明文件或第三方源码。
 
 运行 `no-comments audit <范围>`，把原始输出保存到仓库外的临时文件 `audit.txt`。业务仓库 `.pre-commit-config.yaml` 里 no-comments hook 配了 `--allow` 的，带上同一组参数。
 
@@ -30,11 +30,13 @@ no-comments hook 拦住新增的注释，这个 skill 清理已有的注释和 d
 
 ## 2. 审查
 
-每一批新开一个只读子 agent，prompt 依次拼接：`references/reviewer.md` 全文、`references/investigate.md` 全文、仓库根目录和本 skill 目录的绝对路径（子 agent 要用其中的 `scripts/evidence.sh`）、这一批的 audit 输出。
+每一批新开一个只读子 agent，prompt 依次拼接：`references/reviewer.md` 全文、`references/investigate.md` 全文、仓库根目录和本 skill 目录的绝对路径（子 agent 要用其中的 `scripts/evidence.sh`）、这一批的 audit 输出。审查 TypeScript / TSX 时，在 prompt 末尾补充本节的语言规则，并说明 KEEP 建议以 `// KEEP: ...` 或 `/* KEEP: ... */` 覆盖审查提示中的 `# KEEP: ...` 示例，不写 JSX 花括号。
 
 - Claude Code 用 Agent 工具，类型 `general-purpose`。Codex 用 `spawn_agent`。
 - 没有子 agent 能力的环境（比如没装扩展的 Pi）：自己按这份 prompt 重新审一遍，审查时只读不改。
 - 写注释的 agent 倾向于为自己的注释辩护，所以判定必须由一个新的视角做出，不要沿用写代码时的判断。
+
+TypeScript / TSX 的约束优先用类型、命名常量、可辨识联合类型、测试或 lint 规则表达，不把普通 JSDoc 换个前缀保留下来。编译器读取的指令（`@ts-expect-error`、`@ts-ignore`、`@ts-nocheck`、`@ts-check`、`@jsx`、`@jsxFrag`、`@jsxImportSource`、`@jsxRuntime` 及文件头三斜线指令）不按普通注释删除或改写。按 WORKAROUND 或 ENCODE 单独处理：先调整类型、代码或编译器配置，再手动移除指令，并用项目类型检查验证；JSX 指令还要验证编译产物。`eslint-disable` 先验证 lint，确认不再需要才能 DELETE。已默认放行的 `KEEP:`、合法 Biome 指令和三斜线 `reference` 不在 audit 清单内。
 
 ## 3. 核对审查结果
 
@@ -53,7 +55,7 @@ no-comments hook 拦住新增的注释，这个 skill 清理已有的注释和 d
 no-comments strip /临时目录/review.txt --audit /临时目录/audit.txt
 ```
 
-命令重新提取注释，核对每条的位置、类型和开头 60 个字符；有任何不一致就整体停下，不写文件。它只应用 DELETE 和 KEEP，从原位置靠后的条目改起。DELETE 清除整行注释或行尾的对应注释段；Python docstring 按语法树删除，函数或类体没有其他语句时补 `...`。KEEP 用建议里的 `# KEEP: ...`，建议只能构成一段注释，按语句起始行的缩进放在代码上方；docstring 改为 `"""KEEP: ..."""`。Shell 按 tree-sitter 的 `comment` 节点定位。WORKAROUND 和 ENCODE 留给后续提交。
+命令重新提取注释，核对每条的位置、类型和开头 60 个字符；有任何不一致就整体停下，不写文件。它只应用 DELETE 和 KEEP，从原位置靠后的条目改起。DELETE 清除整行注释或行尾的对应注释段；Python docstring 按语法树删除，函数或类体没有其他语句时补 `...`。KEEP 用建议里的 `# KEEP: ...`，建议只能构成一段注释，按语句起始行的缩进放在代码上方；docstring 改为 `"""KEEP: ..."""`。TypeScript 和 TSX 的 KEEP 建议用 `// KEEP: ...` 或 `/* KEEP: ... */`，工具保留原注释类型和位置。删除纯 JSX 注释时，工具移除空花括号和因此形成的空行；若会改变 JSX 文本子节点或语句结构，则拒绝写入，单独调查该条目。WORKAROUND 和 ENCODE 留给后续提交。
 
 仓库配了 formatter 时，只对改动过且起点已格式化干净的文件跑；先用检查模式（比如 `ruff format --check`）在起点核实。然后做三项检查：
 

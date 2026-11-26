@@ -148,21 +148,6 @@ def test_typescript_parse_error_does_not_pass(repo, capsys, command):
     assert "broken.ts: could not parse TypeScript or TSX" in capsys.readouterr().err
 
 
-def test_strip_leaves_typescript_unsupported(repo, capsys):
-    source = "const n = 1; // note\n"
-    file = repo.write("a.ts", source)
-    repo.commit()
-    assert main(["audit", "a.ts"]) == 0
-    repo.write("audit.txt", capsys.readouterr().out)
-    repo.write("review.txt", "a.ts:1:14 | DELETE | redundant | - | -\n")
-    assert main(["strip", "review.txt", "--audit", "audit.txt"]) == 2
-    assert "not a supported source file" in capsys.readouterr().err
-    assert file.read_text() == source
-    repo.write("a.ts", "const n = 2;\n")
-    assert main(["verify-strip"]) == 0
-    assert main(["verify-strip", "a.ts"]) == 0
-
-
 @pytest.mark.parametrize(
     "statement",
     [
@@ -307,3 +292,119 @@ def test_shifted_retained_comment_does_not_take_duplicate_slot(repo, capsys, bef
         assert [line for line in out.splitlines() if "NC001" in line] == [
             "z.ts:1:21: NC001 comment not allowed: // same"
         ]
+
+
+@pytest.fixture(
+    params=[
+        ("@jsx", "/** @jsx alternate */", "/** @jsx h */"),
+        ("@jsxFrag", "/** @jsxFrag Alternate */", "/** @jsxFrag Fragment */"),
+        ("@jsxImportSource", "/** @jsxImportSource preact */", "/** @jsxImportSource react */"),
+        ("@jsxRuntime", "/** @jsxRuntime classic */", "/** @jsxRuntime automatic */"),
+        ("@ts-expect-error", "// @ts-expect-error original", "// @ts-expect-error revised"),
+        ("@ts-ignore", "// @ts-ignore original", "// @ts-ignore revised"),
+        ("@ts-nocheck", "// @ts-nocheck original", "// @ts-nocheck revised"),
+        ("@ts-check", "// @ts-check original", "// @ts-check revised"),
+        (
+            "/// <reference>",
+            '/// <reference path="./a.d.ts" />',
+            '/// <reference path="./b.d.ts" />',
+        ),
+        ("/// <amd-module>", '/// <amd-module name="a" />', '/// <amd-module name="b" />'),
+        (
+            "/// <amd-dependency>",
+            '/// <amd-dependency path="a" />',
+            '/// <amd-dependency path="b" />',
+        ),
+    ],
+    ids=[
+        "jsx",
+        "jsxFrag",
+        "jsxImportSource",
+        "jsxRuntime",
+        "expect",
+        "ignore",
+        "nocheck",
+        "check",
+        "reference",
+        "amd-module",
+        "amd-dependency",
+    ],
+)
+def compiler_directive(request):
+    return request.param
+
+
+@pytest.mark.parametrize("action", ["DELETE", "KEEP"])
+def test_strip_refuses_to_rewrite_compiler_directives_atomically(
+    repo, capsys, compiler_directive, action
+):
+    name, comment, _ = compiler_directive
+    first = repo.write("a.ts", "// stale\nconst a = 1;\n")
+    sample = repo.write("sample.tsx", f"{comment}\nconst x = <div />;\n")
+    repo.commit()
+    assert main(["audit"]) == 0
+    audit = capsys.readouterr().out
+    assert ("sample.tsx:1:1: NC001" in audit) == (name != "/// <reference>")
+    repo.write("audit.txt", audit)
+    repo.write(
+        "review.txt",
+        f"a.ts:1:1 | DELETE | stale | - | -\nsample.tsx:1:1 | {action} | rationale | docs | // KEEP: external\n",
+    )
+    assert main(["strip", "review.txt", "--audit", "audit.txt"]) == 2
+    output = capsys.readouterr().err
+    assert f"compiler directive {name}" in output
+    assert "WORKAROUND or ENCODE" in output
+    assert first.read_text() == "// stale\nconst a = 1;\n"
+    assert sample.read_text() == f"{comment}\nconst x = <div />;\n"
+
+
+@pytest.mark.parametrize("change", ["add", "delete", "keep", "modify"])
+def test_verify_strip_reports_changed_compiler_directive(repo, capsys, compiler_directive, change):
+    name, comment, modified = compiler_directive
+    jsx = "const x = <div />;\n"
+    before, after = {
+        "add": ("", comment),
+        "delete": (comment, ""),
+        "keep": (comment, "// KEEP: outside"),
+        "modify": (comment, modified),
+    }[change]
+    repo.write("sample.tsx", before + "\n" + jsx)
+    repo.commit()
+    repo.write("sample.tsx", after + "\n" + jsx)
+    assert main(["verify-strip"]) == 1
+    assert (
+        f"sample.tsx: code changed (compiler directive changed: {name})" in capsys.readouterr().out
+    )
+
+
+def test_verify_strip_detects_suppression_moved_to_another_statement(repo, capsys):
+    repo.write("a.ts", "// @ts-ignore\nconst x = 1;\nconst y = 2;\n")
+    repo.commit()
+    repo.write("a.ts", "const x = 1;\n// @ts-ignore\nconst y = 2;\n")
+    assert main(["verify-strip"]) == 1
+    assert "compiler directive changed: @ts-ignore" in capsys.readouterr().out
+
+
+def test_verify_strip_detects_reordered_file_type_check_switches(repo, capsys):
+    repo.write("a.ts", "// @ts-check\n// @ts-nocheck\nconst x = 1;\n")
+    repo.commit()
+    repo.write("a.ts", "// @ts-nocheck\n// @ts-check\nconst x = 1;\n")
+    assert main(["verify-strip"]) == 1
+    assert "compiler directive changed: @ts-check, @ts-nocheck" in capsys.readouterr().out
+
+
+def test_verify_strip_accepts_ordinary_comment_and_inactive_header_lookalikes(repo, capsys):
+    literals = 'const text = "// @ts-nocheck";\nconst hint = `/** @jsx other */`;\n'
+    repo.write("a.ts", literals + "// @ts-nocheck\n/** @jsx other */\nconst x = 1;\n")
+    repo.commit()
+    repo.write("a.ts", literals + "const x = 1;\n")
+    assert main(["verify-strip"]) == 0
+    assert not capsys.readouterr().out
+
+
+def test_verify_strip_preserves_block_and_triple_slash_suppressions(repo, capsys):
+    repo.write("a.ts", "const x = 1;\n/* @ts-ignore */\n/// @ts-expect-error\nconst y = 2;\n")
+    repo.commit()
+    repo.write("a.ts", "const x = 1;\nconst y = 2;\n")
+    assert main(["verify-strip"]) == 1
+    assert "compiler directive changed: @ts-ignore, @ts-expect-error" in capsys.readouterr().out

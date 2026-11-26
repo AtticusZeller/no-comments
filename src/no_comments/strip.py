@@ -7,12 +7,11 @@ from pathlib import Path
 
 from no_comments.detect import (
     EXTENSIONS,
-    STRIP_LANGUAGES,
     effective_shebang,
     shebang_language,
 )
 from no_comments.diff import _git_bytes, git
-from no_comments.langs import ParseError, python, shell
+from no_comments.langs import ParseError, python, shell, typescript
 
 DOCSTRING_HINT = (
     "删掉的 docstring 可能被 typer、click、FastAPI 等框架当作帮助文本或接口描述读取（`__doc__`），"
@@ -23,6 +22,7 @@ DOCSTRING_HINT = (
 @dataclass
 class StripReport:
     changed: list[str] = field(default_factory=list)
+    directives: dict[str, list[str]] = field(default_factory=dict)
     removed_docstrings: list[tuple[str, int, str]] = field(default_factory=list)
 
 
@@ -130,7 +130,7 @@ def verify(base: str, files: Sequence[str]) -> StripReport:
         work_bytes = disk.read_bytes() if disk.is_file() else None
         base_bytes = _base_blob(base, path)
         lang = _language(path, base_bytes, work_bytes)
-        if lang not in STRIP_LANGUAGES:
+        if lang is None:
             continue
         try:
             if lang == "python":
@@ -152,8 +152,20 @@ def verify(base: str, files: Sequence[str]) -> StripReport:
                         for name, line in docstring_owners(base_source).items()
                         if name not in kept
                     ]
-            else:
+            elif lang == "shell":
                 same = shell.code_lines(base_source) == shell.code_lines(work_source)
+            else:
+                changed = typescript.changed_directives(
+                    typescript.compiler_directives(base_source, lang),
+                    typescript.compiler_directives(work_source, lang),
+                )
+                if changed:
+                    report.directives[path] = changed
+                    report.changed.append(path)
+                    continue
+                same = typescript.code_signature(base_source, lang) == typescript.code_signature(
+                    work_source, lang
+                )
         except ParseError as exc:
             raise ParseError(f"{path}: {exc}") from exc
         if not same:
@@ -164,7 +176,9 @@ def verify(base: str, files: Sequence[str]) -> StripReport:
 def run_verify_strip(base: str, files: Sequence[str]) -> int:
     report = verify(base, files)
     for path in report.changed:
-        print(f"{path}: code changed")
+        directives = report.directives.get(path)
+        details = f" (compiler directive changed: {', '.join(directives)})" if directives else ""
+        print(f"{path}: code changed{details}")
     for path, line, name in report.removed_docstrings:
         print(f"{path}:{line}: docstring removed from {name} ({base})")
     if report.removed_docstrings:

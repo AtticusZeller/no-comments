@@ -487,3 +487,143 @@ def test_shell_keep_walks_back_only_actual_continuations(repo, capsys, prefix, c
     assert path.read_bytes() == expected + b"\n"
     assert execute("bash", "a.sh") == before
     assert main(["verify-strip"]) == 0
+
+
+def test_strip_typescript_line_block_and_jsdoc_comments(repo, capsys):
+    path = repo.write(
+        "a.ts",
+        "// standalone\n"
+        "/** Old docs\n * additional text\n */\n"
+        'const é = "// literal"; // line tail\n'
+        "const template = `/* literal */ ${1 /* middle */ + 2}`;\n"
+        "const pair = 1 + /* old\n   note */ 2;\n",
+    )
+    repo.commit()
+    prepare(
+        capsys,
+        "a.ts:1:1 | DELETE | redundant | - | -",
+        "a.ts:2:1 | DELETE | redundant | - | -",
+        "a.ts:5:25 | DELETE | redundant | - | -",
+        "a.ts:6:37 | DELETE | redundant | - | -",
+        "a.ts:7:18 | DELETE | redundant | - | -",
+    )
+    assert run() == 0, capsys.readouterr().err
+    assert path.read_text() == (
+        'const é = "// literal";\n'
+        "const template = `/* literal */ ${1  + 2}`;\n"
+        "const pair = 1 + \n 2;\n"
+    )
+    assert main(["verify-strip"]) == 0
+
+
+def test_strip_jsx_removes_wrapper_and_empty_line_but_retains_keep_wrapper(repo, capsys):
+    path = repo.write(
+        "view.tsx",
+        "const view = (\n"
+        "  <section>\n"
+        "    {/* stale */}\n"
+        "    <div />{/* inline */}\n"
+        "    {/* external */}\n"
+        "    <span> // text /* still text */ </span>\n"
+        "  </section>\n"
+        ");\n",
+    )
+    repo.commit()
+    prepare(
+        capsys,
+        "view.tsx:3:6 | DELETE | redundant | - | -",
+        "view.tsx:4:13 | DELETE | redundant | - | -",
+        "view.tsx:5:6 | KEEP | external | docs | /* KEEP: external invariant */",
+    )
+    assert run() == 0, capsys.readouterr().err
+    assert path.read_text() == (
+        "const view = (\n  <section>\n    <div />\n"
+        "    {/* KEEP: external invariant */}\n"
+        "    <span> // text /* still text */ </span>\n  </section>\n);\n"
+    )
+    assert main(["verify-strip"]) == 0
+
+
+def test_strip_declaration_keeps_directive_and_removes_ordinary_segment(repo, capsys):
+    file = repo.write("env.d.ts", "")
+    file.write_bytes(
+        b'\xef\xbb\xbf/// <reference types="node" /> // stale\r\n'
+        b"// external\r\ndeclare const x: string;\r\n"
+    )
+    repo.commit()
+    prepare(
+        capsys,
+        "env.d.ts:1:32 | DELETE | redundant | - | -",
+        "env.d.ts:2:1 | KEEP | external | docs | // KEEP: external invariant",
+    )
+    assert run() == 0, capsys.readouterr().err
+    assert file.read_bytes() == (
+        b'\xef\xbb\xbf/// <reference types="node" />\r\n'
+        b"// KEEP: external invariant\r\ndeclare const x: string;\r\n"
+    )
+    assert main(["verify-strip"]) == 0
+
+
+def test_strip_refuses_to_merge_jsx_text_children_and_does_not_write_other_file(repo, capsys):
+    first = repo.write("a.ts", "// stale\nconst a = 1;\n")
+    source = "const view = <p>a{/* stale */}b</p>;\n"
+    last = repo.write("z.tsx", source)
+    repo.commit()
+    prepare(
+        capsys,
+        "a.ts:1:1 | DELETE | redundant | - | -",
+        "z.tsx:1:19 | DELETE | redundant | - | -",
+    )
+    assert run() == 2
+    assert "rewriting would change code" in capsys.readouterr().err
+    assert first.read_text() == "// stale\nconst a = 1;\n"
+    assert last.read_text() == source
+
+
+def test_strip_preserves_restricted_line_break_in_block_comment(repo, capsys):
+    path = repo.write("a.ts", "function f() { return /* stale\n*/ 1; }\n")
+    repo.commit()
+    prepare(capsys, "a.ts:1:23 | DELETE | redundant | - | -")
+    assert run() == 0, capsys.readouterr().err
+    assert path.read_text() == "function f() { return \n 1; }\n"
+    assert main(["verify-strip"]) == 0
+
+
+def test_strip_jsx_wrapper_retained_when_another_comment_is_kept(repo, capsys):
+    path = repo.write(
+        "a.tsx", "const view = <p>{/* remove */ /* KEEP: outside constraint */}</p>;\n"
+    )
+    repo.commit()
+    prepare(capsys, "a.tsx:1:18 | DELETE | redundant | - | -")
+    assert run() == 0, capsys.readouterr().err
+    assert path.read_text() == "const view = <p>{ /* KEEP: outside constraint */}</p>;\n"
+    assert main(["verify-strip"]) == 0
+
+
+def test_strip_removes_final_comment_without_touching_preceding_line_ending(repo, capsys):
+    path = repo.write("a.ts", "const x = 1;\n// obsolete")
+    repo.commit()
+    prepare(capsys, "a.ts:2:1 | DELETE | redundant | - | -")
+    assert run() == 0, capsys.readouterr().err
+    assert path.read_bytes() == b"const x = 1;\n"
+
+
+def test_strip_rejects_reference_directive_even_with_forged_audit_row(repo, capsys):
+    text = '/// <reference types="node" />'
+    path = repo.write("a.d.ts", text + "\n")
+    repo.commit()
+    prepare(capsys, "a.d.ts:1:1 | DELETE | redundant | - | -")
+    assert Path("audit.txt").read_text() == ""
+    Path("audit.txt").write_text(f"a.d.ts:1:1: NC001 comment not allowed: {text}\n")
+    assert run() == 2
+    assert "compiler directive /// <reference>" in capsys.readouterr().err
+    assert path.read_text() == text + "\n"
+
+
+@pytest.mark.parametrize("space", ["\u00a0", " \u2003\t", "\ufeff\u00a0"])
+def test_strip_removes_only_newly_empty_unicode_whitespace_line(repo, capsys, space):
+    path = repo.write("a.ts", f"const a = 1;\n{space}// obsolete\n{space}\nconst b = 2;\n")
+    repo.commit()
+    prepare(capsys, f"a.ts:2:{len(space) + 1} | DELETE | redundant | - | -")
+    assert run() == 0, capsys.readouterr().err
+    assert path.read_text() == f"const a = 1;\n{space}\nconst b = 2;\n"

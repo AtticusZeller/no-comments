@@ -143,3 +143,95 @@ def test_base_ref_and_files_from_subdirectory(repo, capsys, monkeypatch):
     assert run(capsys, "--base", base, "b.py") == (0, "")
     repo.write("pkg/b.py", "x = 3\n")
     assert run(capsys, "--base", base, "b.py") == (1, "pkg/b.py: code changed\n")
+
+
+@pytest.mark.parametrize(
+    "name, before, after",
+    [
+        ("doc.ts", "/** Old docs */\nexport const x = 1; // old\n", "export const x = 1;\n"),
+        ("env.d.ts", "declare const x: /* old */ string;\n", "declare const x: string;\n"),
+        (
+            "view.tsx",
+            "const x = <p>\n  {/* gone */}\n  <b />\n</p>;\n",
+            "const x = <p>\n  <b />\n</p>;\n",
+        ),
+        ("only.ts", "// old\n", ""),
+        (
+            "a.ts",
+            'export * from "x" with { /* old */ kind: "custom" };\n',
+            'export * from "x" with { kind: "custom" };\n',
+        ),
+    ],
+)
+def test_verify_strip_accepts_typescript_comment_only_changes(repo, capsys, name, before, after):
+    repo.write(name, before)
+    base = repo.commit()
+    repo.write(name, after)
+    assert run(capsys, "--base", base) == (0, "")
+
+
+@pytest.mark.parametrize(
+    "before, after",
+    [
+        ('const x = "// keep";', 'const x = "// change";'),
+        ("const x = `/* keep */ ${1}`;", "const x = `/* change */ ${1}`;"),
+        ("const x = <p> // text </p>;", "const x = <p> // other </p>;"),
+        ("const x = <p> <b/> </p>;", "const x = <p><b/></p>;"),
+        ("function f(){ return /*\n old */ 1; }", "function f(){ return 1; }"),
+        ('export type * from "x";', 'export * from "x";'),
+        ('import defer * as ns from "x";', 'import * as ns from "x";'),
+        ('export * from "x" with { a: "old" };', 'export * from "x" with { a: "new" };'),
+        ('export * from "x" with { a: "old" };', 'export * from "x";'),
+    ],
+)
+def test_verify_strip_detects_typescript_code_changes(repo, capsys, before, after):
+    repo.write("a.tsx", before)
+    repo.commit()
+    repo.write("a.tsx", after)
+    assert run(capsys) == (1, "a.tsx: code changed\n")
+
+
+@pytest.mark.parametrize(
+    "before, after",
+    [
+        ("function f(){ return/* note\n*/ 1; }", "function f(){ return\n1; }"),
+        ("function f(){ return/* note\r\n*/ 1; }", "function f(){ return\r\n1; }"),
+        (
+            "declare function f(x: number[]): void;\nf([\n\t1, // rationale\n\t2,\n]);",
+            "declare function f(x: number[]): void;\nf([1, 2]);",
+        ),
+        ("const x = { a: 1, };", "const x = { a: 1 };"),
+        ("f(1, 2,);", "f(1, 2);"),
+        ("function f(x: number, y: number,) {}", "function f(x: number, y: number) {}"),
+        ("type X = { readonly a: number, };", "type X = { readonly a: number };"),
+        ("type X = [number, string,];", "type X = [number, string];"),
+        ("type X = Box<number, string,>;", "type X = Box<number, string>;"),
+        ("const [x,,] = values;", "const [x,,] = values;"),
+        ('export * from "x" with { mode: "test", };', 'export * from "x" with { mode: "test" };'),
+    ],
+)
+def test_verify_strip_accepts_equivalent_ts_line_breaks_and_optional_commas(
+    repo, capsys, before, after
+):
+    repo.write("a.ts", before + "\n")
+    repo.commit()
+    repo.write("a.ts", after + "\n")
+    assert run(capsys) == (0, "")
+
+
+@pytest.mark.parametrize(
+    "before, after",
+    [
+        ("function f(){ return\n1; }", "function f(){ return 1; }"),
+        ("const x = [1,,];", "const x = [1,];"),
+        ("const x = [,];", "const x = [];"),
+        ("const x = [1,,2];", "const x = [1,2];"),
+        ("const [x,,] = values;", "const [x,] = values;"),
+        ("const x = (1, 2);", "const x = (2);"),
+    ],
+)
+def test_verify_strip_detects_ts_asi_and_meaningful_commas(repo, capsys, before, after):
+    repo.write("a.ts", before + "\n")
+    repo.commit()
+    repo.write("a.ts", after + "\n")
+    assert run(capsys) == (1, "a.ts: code changed\n")
