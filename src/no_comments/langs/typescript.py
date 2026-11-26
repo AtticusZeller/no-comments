@@ -1,4 +1,5 @@
 import re
+from bisect import bisect_left
 from collections.abc import Iterator
 from dataclasses import dataclass
 
@@ -26,6 +27,32 @@ _NO_LINE_BREAK_AFTER = {"return", "throw", "break", "continue", "yield", "async"
 _NO_LINE_BREAK_BEFORE = {"++", "--", "=>"}
 TS_LANGUAGES = {"typescript", "tsx"}
 Syntax = tuple[tuple[str, bytes], ...]
+_OPTIONAL_COMMA_LISTS = {
+    "arguments",
+    "array",
+    "array_pattern",
+    "enum_body",
+    "export_clause",
+    "formal_parameters",
+    "import_attribute",
+    "named_imports",
+    "object",
+    "object_pattern",
+    "object_type",
+    "tuple_type",
+    "type_arguments",
+    "type_parameters",
+}
+_LINE_DIRECTIVE = re.compile(r"^///?\s*@(ts-check|ts-nocheck)(?=$|[\s:])", re.I)
+_LINE_SUPPRESSION = re.compile(r"^///?\s*@(ts-expect-error|ts-ignore)")
+_BLOCK_SUPPRESSION = re.compile(r"^[/*]*\s*@(ts-expect-error|ts-ignore)")
+_JSX_PRAGMA = re.compile(r"@(jsx(?:Frag|ImportSource|Runtime)?)\s+\S+", re.I)
+_TRIPLE_SLASH = re.compile(r"^///\s*<(reference|amd-dependency|amd-module)\s+[^\r\n]*?/>", re.I)
+_PRAGMA_LABELS = {
+    "jsxfrag": "jsxFrag",
+    "jsximportsource": "jsxImportSource",
+    "jsxruntime": "jsxRuntime",
+}
 
 
 @dataclass(frozen=True)
@@ -34,6 +61,19 @@ class CommentSpan:
     start: int
     end: int
     wrapper: tuple[int, int] | None = None
+
+
+@dataclass(frozen=True)
+class CompilerDirective:
+    name: str
+    start: int
+    end: int
+    text: str
+    target: int | None = None
+
+    @property
+    def identity(self) -> tuple[str, int | None]:
+        return self.text, self.target
 
 
 class TypeScriptParseError(ParseError):
@@ -180,6 +220,7 @@ def _mask_attributes(parser: Parser, query: Query, clause: bytes) -> tuple[bytes
     tokens = tuple(
         (token.type, clause[token.start_byte - len(prefix) : token.end_byte - len(prefix)])
         for token in _tokens(attribute)
+        if not _optional_trailing_comma(token)
     )
     return bytes(masked), tokens
 
@@ -253,21 +294,29 @@ def _empty_jsx(node: Node) -> bool:
     )
 
 
-def comment_spans(data: bytes, lang: str) -> list[CommentSpan]:
-    language = _TSX if lang == "tsx" else _TS
-    root = _parse(data, language, {})
-    lines = data.split(b"\n")
-    header_end = next(
+def _header_end(root: Node) -> int:
+    return next(
         (
             node.start_byte
             for node in root.named_children
             if node.type not in {"comment", "hash_bang_line"}
         ),
-        len(data),
+        root.end_byte,
     )
-    captures = QueryCursor(_QUERIES[language]).captures(root)
+
+
+def _comment_nodes(root: Node, language: Language) -> list[Node]:
+    matches = QueryCursor(_QUERIES[language]).captures(root).get("comment", [])
+    return sorted(matches, key=lambda node: node.start_byte)
+
+
+def comment_spans(data: bytes, lang: str) -> list[CommentSpan]:
+    language = _TSX if lang == "tsx" else _TS
+    root = _parse(data, language, {})
+    lines = data.split(b"\n")
+    header_end = _header_end(root)
     comments = []
-    for node in sorted(captures.get("comment", []), key=lambda n: n.start_byte):
+    for node in _comment_nodes(root, language):
         row, byte_col = node.start_point
         col = len(lines[row][:byte_col].decode("utf-8")) + 1
         text = data[node.start_byte : node.end_byte].decode("utf-8")
@@ -309,16 +358,131 @@ def _jsx_text(text: bytes) -> bytes:
     return b" ".join(line for line in cleaned if line)
 
 
+def _optional_trailing_comma(node: Node) -> bool:
+    if node.type != "," or node.parent is None or node.parent.type not in _OPTIONAL_COMMA_LISTS:
+        return False
+    before, after = node.prev_sibling, node.next_sibling
+    while before is not None and before.type == "comment":
+        before = before.prev_sibling
+    while after is not None and after.type == "comment":
+        after = after.next_sibling
+    return (
+        before is not None
+        and before.is_named
+        and after is not None
+        and after.type in {"]", "}", ")", ">"}
+    )
+
+
+def _directive_names(text: str, header: bool) -> tuple[list[str], bool]:
+    if text.startswith("//"):
+        if match := _LINE_SUPPRESSION.match(text):
+            return [f"@{match[1]}"], True
+        if header:
+            if match := _LINE_DIRECTIVE.match(text):
+                return [f"@{match[1].lower()}"], False
+            if match := _TRIPLE_SLASH.match(text):
+                return [f"/// <{match[1].lower()}>"], False
+    else:
+        last_line = re.split(r"[\r\n\u2028\u2029]", text)[-1]
+        if match := _BLOCK_SUPPRESSION.match(last_line):
+            return [f"@{match[1]}"], True
+        if header:
+            labels = [tag.lower() for tag in _JSX_PRAGMA.findall(text[:-2])]
+            return [f"@{_PRAGMA_LABELS.get(tag, tag)}" for tag in labels], False
+    return [], False
+
+
+def _suppression_target(data: bytes, end: int, token_offsets: list[int]) -> int:
+    newline = _LINE_BREAK.search(data, end)
+    if newline is None:
+        return -1
+    start = newline.end()
+    for line in _LINE_BREAK.finditer(data, start):
+        content = data[start : line.start()].decode().strip()
+        if content and not content.startswith("//"):
+            break
+        start = line.end()
+    if data[start:].lstrip().startswith(b"/*"):
+        return -1
+    target = bisect_left(token_offsets, start)
+    return target if target < len(token_offsets) else -1
+
+
+def compiler_directives(source: str, lang: str) -> list[CompilerDirective]:
+    data = source.encode()
+    language = _TSX if lang == "tsx" else _TS
+    root = _parse(data, language, {})
+    header_end = _header_end(root)
+    directives = []
+    token_offsets: list[int] | None = None
+    for node in _comment_nodes(root, language):
+        raw = data[node.start_byte : node.end_byte].decode()
+        names, suppression = _directive_names(raw, node.start_byte < header_end)
+        if names and (triple := _TRIPLE_SLASH.match(raw)):
+            raw = triple[0]
+        target = None
+        if suppression:
+            if token_offsets is None:
+                token_offsets = [
+                    t.start_byte for t in _tokens(root) if not _optional_trailing_comma(t)
+                ]
+            target = _suppression_target(data, node.end_byte, token_offsets)
+        directives.extend(
+            CompilerDirective(
+                name, node.start_byte, node.start_byte + len(raw.encode()), raw.rstrip(), target
+            )
+            for name in names
+        )
+    return directives
+
+
+def changed_directives(
+    before: list[CompilerDirective], after: list[CompilerDirective]
+) -> list[str]:
+    names = dict.fromkeys(d.name for d in (*before, *after))
+    changed = [
+        name
+        for name in names
+        if [d.identity for d in before if d.name == name]
+        != [d.identity for d in after if d.name == name]
+    ]
+    switches = {"@ts-check", "@ts-nocheck"}
+    prior = [d.name for d in before if d.name in switches]
+    current = [d.name for d in after if d.name in switches]
+    if not changed and prior != current:
+        return list(dict.fromkeys(prior + current))
+    return changed
+
+
+def _normalize_comment_breaks(data: bytes, language: Language, root: Node) -> bytes:
+    adjusted: bytearray | None = None
+    for node in _comment_nodes(root, language):
+        start, end = node.start_byte, node.end_byte
+        if data[start : start + 2] == b"/*" and (line := _LINE_BREAK.search(data, start, end)):
+            if adjusted is None:
+                adjusted = bytearray(data)
+            adjusted[start:end] = b" " * (end - start)
+            adjusted[line.start()] = 10
+    return data if adjusted is None else bytes(adjusted)
+
+
 def code_signature(source: str, lang: str) -> Syntax:
     data = source.encode()
     extras: dict[int, Syntax] = {}
-    root = _parse(data, _TSX if lang == "tsx" else _TS, extras)
+    language = _TSX if lang == "tsx" else _TS
+    root = _parse(data, language, extras)
+    normalized = _normalize_comment_breaks(data, language, root)
+    if normalized is not data:
+        data = normalized
+        extras.clear()
+        root = _parse(data, language, extras)
     result: list[tuple[str, bytes]] = []
     previous: Node | None = None
     stack: list[tuple[Node, bool]] = [(root, False)]
     while stack:
         node, end = stack.pop()
-        if node.type == "comment" or _empty_jsx(node):
+        if node.type == "comment" or _empty_jsx(node) or _optional_trailing_comma(node):
             continue
         if node.type == "jsx_text":
             if text := _jsx_text(data[node.start_byte : node.end_byte]):
@@ -328,7 +492,11 @@ def code_signature(source: str, lang: str) -> Syntax:
         if end:
             result.append(("end", b""))
         elif node.type == "import_attribute":
-            result.extend((t.type, data[t.start_byte : t.end_byte]) for t in _tokens(node))
+            result.extend(
+                (t.type, data[t.start_byte : t.end_byte])
+                for t in _tokens(node)
+                if not _optional_trailing_comma(t)
+            )
         elif node.type != "program" and (not node.child_count or node.type in {"string", "regex"}):
             if (
                 previous is not None

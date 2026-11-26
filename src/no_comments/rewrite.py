@@ -235,11 +235,20 @@ def docstring_edits(
 
 
 def checked_actions(
-    found: dict[tuple[int, int], Comment], reviews: list[Review], audit: dict[str, str], lang: str
+    found: dict[tuple[int, int], Comment],
+    reviews: list[Review],
+    audit: dict[str, str],
+    lang: str,
+    protected: dict[tuple[int, int], str] | None = None,
 ) -> dict[tuple[int, int], Review]:
     actions = {}
     for review in reviews:
         key = (review.line, review.col)
+        if review.decision in _APPLY and protected is not None and key in protected:
+            raise ParseError(
+                f"{review.location}: compiler directive {protected[key]} must be handled as "
+                "WORKAROUND or ENCODE; change the code or configuration before removing it manually"
+            )
         comment = found.get(key)
         if comment is None or audit.get(review.location) != format_violation(review.name, comment):
             raise ParseError(f"{review.location}: does not match the saved audit output")
@@ -277,6 +286,7 @@ def ts_keep_body(review: Review) -> str:
     return body
 
 
+_TS_BLANK = re.compile(r"[\s\ufeff]*")
 _TS_NEWLINE = re.compile(rb"\r\n|[\r\n]|\xe2\x80[\xa8\xa9]")
 
 
@@ -330,7 +340,7 @@ def _apply_ts_edits(data: bytes, edits: list[tuple[int, int, bytes]]) -> bytes:
     return b"".join(
         line + ending
         for i, (line, ending) in enumerate(zip(lines, endings, strict=True))
-        if i not in affected or line.strip(b" \t")
+        if i not in affected or not _TS_BLANK.fullmatch(line.decode())
     )
 
 
@@ -341,8 +351,15 @@ def rewrite_typescript(
     try:
         spans = typescript.comment_spans(original, lang)
         located = {(span.comment.line, span.comment.col): span for span in spans}
+        directives = typescript.compiler_directives(source, lang)
+        protected = {
+            key: directive.name
+            for key, span in located.items()
+            for directive in directives
+            if span.start < directive.end and directive.start < span.end
+        }
         actions = checked_actions(
-            {key: span.comment for key, span in located.items()}, reviews, audit, lang
+            {key: span.comment for key, span in located.items()}, reviews, audit, lang, protected
         )
         if not actions:
             return None
@@ -364,8 +381,16 @@ def rewrite_typescript(
         output = (codecs.BOM_UTF8 if data.startswith(codecs.BOM_UTF8) else b"") + rewritten
         if reason := changed_header(data, output, lang):
             raise ParseError(reason)
+        rewritten_source = rewritten.decode()
+        changed = typescript.changed_directives(
+            directives, typescript.compiler_directives(rewritten_source, lang)
+        )
+        if changed:
+            raise ParseError(
+                f"rewriting would change compiler directive {', '.join(changed)}; use WORKAROUND or ENCODE"
+            )
         if typescript.code_signature(source, lang) != typescript.code_signature(
-            rewritten.decode(), lang
+            rewritten_source, lang
         ):
             raise ParseError("rewriting would change code")
         expected = Counter(span.comment.key for key, span in located.items() if key not in actions)

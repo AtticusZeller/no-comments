@@ -36,7 +36,7 @@ no-comments hook 拦住新增的注释，这个 skill 清理已有的注释和 d
 - 没有子 agent 能力的环境（比如没装扩展的 Pi）：自己按这份 prompt 重新审一遍，审查时只读不改。
 - 写注释的 agent 倾向于为自己的注释辩护，所以判定必须由一个新的视角做出，不要沿用写代码时的判断。
 
-TypeScript / TSX 的约束优先用类型、命名常量、可辨识联合类型、测试或 lint 规则表达，不把普通 JSDoc 换个前缀保留下来。`@ts-expect-error`、`@ts-ignore`、`eslint-disable` 等会改变工具行为；先逐条用项目的类型检查或 lint 核实。仅在验证无用后判 DELETE；负向类型测试或仍需要的特例不要改写成 KEEP，留待单独处置并记录验证方式。已默认放行的 `KEEP:`、合法 Biome 指令和三斜线 `reference` 不在清单内。
+TypeScript / TSX 的约束优先用类型、命名常量、可辨识联合类型、测试或 lint 规则表达，不把普通 JSDoc 换个前缀保留下来。编译器读取的指令（`@ts-expect-error`、`@ts-ignore`、`@ts-nocheck`、`@ts-check`、`@jsx`、`@jsxFrag`、`@jsxImportSource`、`@jsxRuntime` 及文件头三斜线指令）不按普通注释删除或改写。按 WORKAROUND 或 ENCODE 单独处理：先调整类型、代码或编译器配置，再手动移除指令，并用项目类型检查验证；JSX 指令还要验证编译产物。`eslint-disable` 先验证 lint，确认不再需要才能 DELETE。已默认放行的 `KEEP:`、合法 Biome 指令和三斜线 `reference` 不在 audit 清单内。
 
 ## 3. 核对审查结果
 

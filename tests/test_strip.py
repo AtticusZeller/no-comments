@@ -189,3 +189,49 @@ def test_verify_strip_detects_typescript_code_changes(repo, capsys, before, afte
     repo.commit()
     repo.write("a.tsx", after)
     assert run(capsys) == (1, "a.tsx: code changed\n")
+
+
+@pytest.mark.parametrize(
+    "before, after",
+    [
+        ("function f(){ return/* note\n*/ 1; }", "function f(){ return\n1; }"),
+        ("function f(){ return/* note\r\n*/ 1; }", "function f(){ return\r\n1; }"),
+        (
+            "declare function f(x: number[]): void;\nf([\n\t1, // rationale\n\t2,\n]);",
+            "declare function f(x: number[]): void;\nf([1, 2]);",
+        ),
+        ("const x = { a: 1, };", "const x = { a: 1 };"),
+        ("f(1, 2,);", "f(1, 2);"),
+        ("function f(x: number, y: number,) {}", "function f(x: number, y: number) {}"),
+        ("type X = { readonly a: number, };", "type X = { readonly a: number };"),
+        ("type X = [number, string,];", "type X = [number, string];"),
+        ("type X = Box<number, string,>;", "type X = Box<number, string>;"),
+        ("const [x,,] = values;", "const [x,,] = values;"),
+        ('export * from "x" with { mode: "test", };', 'export * from "x" with { mode: "test" };'),
+    ],
+)
+def test_verify_strip_accepts_equivalent_ts_line_breaks_and_optional_commas(
+    repo, capsys, before, after
+):
+    repo.write("a.ts", before + "\n")
+    repo.commit()
+    repo.write("a.ts", after + "\n")
+    assert run(capsys) == (0, "")
+
+
+@pytest.mark.parametrize(
+    "before, after",
+    [
+        ("function f(){ return\n1; }", "function f(){ return 1; }"),
+        ("const x = [1,,];", "const x = [1,];"),
+        ("const x = [,];", "const x = [];"),
+        ("const x = [1,,2];", "const x = [1,2];"),
+        ("const [x,,] = values;", "const [x,] = values;"),
+        ("const x = (1, 2);", "const x = (2);"),
+    ],
+)
+def test_verify_strip_detects_ts_asi_and_meaningful_commas(repo, capsys, before, after):
+    repo.write("a.ts", before + "\n")
+    repo.commit()
+    repo.write("a.ts", after + "\n")
+    assert run(capsys) == (1, "a.ts: code changed\n")

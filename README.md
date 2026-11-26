@@ -150,11 +150,11 @@ no-comments strip /tmp/review.txt --audit /tmp/audit.txt
 
 审查表是 UTF-8 纯文本，每行格式为 `路径:行号:列号 | 判定 | 理由 | 证据 | 建议写法`。位置原样取自 audit；`KEEP` 的建议必须是一段完整的单行注释：Python 和 Shell 用 `# KEEP: ...`，TypeScript 和 TSX 用 `// KEEP: ...` 或 `/* KEEP: ... */`。TypeScript 和 TSX 改写时沿用原注释的形式与位置，保留 JSX 的花括号。其他判定可用 `-` 占位。命令只应用 `DELETE` 和 `KEEP`，保留 `WORKAROUND` 和 `ENCODE`。
 
-删除 JSX 注释时，如果花括号中没有表达式或其他保留的注释，则一并移除花括号，并去掉因此形成的空行。如果删除会合并两个有内容的 JSX 文本子节点、改变语句结构或字面量，命令拒绝改写。生成文件应排除在审查范围外。
+删除 JSX 注释时，如果花括号中没有表达式或其他保留的注释，则一并移除花括号，并去掉因此形成的空行。如果删除会合并两个有内容的 JSX 文本子节点、改变语句结构或字面量，命令拒绝改写。生成文件应排除在审查范围外。编译器读取的注释指令不能由 `strip` 删除或改写成 KEEP，应按 WORKAROUND 或 ENCODE 处理。
 
 写入前，命令检查所有条目的位置、类型和前 60 个字符是否与原 audit 一致、路径是否经过符号链接，以及改写是否改变生效的 shebang 或 Python 编码声明。核对失败时退出 `2`，不写入任何文件。写入阶段遇到错误也退出 `2`，但不会撤销此前的写入，会报告已经写入的路径。
 
-用 `verify-strip` 检查工作区是否只改了注释。它比较 `--base`（默认 `HEAD`）和工作区；不给文件时检查两者之间有改动的全部 Python、Shell、TypeScript 和 TSX 文件。TypeScript 和 TSX 对比去除注释后的语法结构与字面量。退出码 `0` 表示只有注释和 docstring 不同，`1` 表示有代码改动并列出文件，`2` 表示出错。删掉的 docstring 会单独列出，因为 typer、click、FastAPI 这类框架可能读取 `__doc__`。
+用 `verify-strip` 检查工作区是否只改了注释。它比较 `--base`（默认 `HEAD`）和工作区；不给文件时检查两者之间有改动的全部 Python、Shell、TypeScript 和 TSX 文件。TypeScript 和 TSX 对比去除普通注释后的语法结构、字面量和编译指令。可选尾逗号不影响结果；数组空槽等实际语法改动会被报告。编译指令的新增、删除和改动会列出指令名称。退出码 `0` 表示只有注释和 docstring 不同，`1` 表示有代码改动并列出文件，`2` 表示出错。删掉的 docstring 会单独列出，因为 typer、click、FastAPI 这类框架可能读取 `__doc__`。
 
 ```sh
 no-comments verify-strip --base HEAD

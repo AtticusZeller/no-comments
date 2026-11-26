@@ -584,9 +584,9 @@ def test_strip_preserves_restricted_line_break_in_block_comment(repo, capsys):
     path = repo.write("a.ts", "function f() { return /* stale\n*/ 1; }\n")
     repo.commit()
     prepare(capsys, "a.ts:1:23 | DELETE | redundant | - | -")
-    assert run() == 2
-    assert "rewriting would change code" in capsys.readouterr().err
-    assert "/* stale" in path.read_text()
+    assert run() == 0, capsys.readouterr().err
+    assert path.read_text() == "function f() { return \n 1; }\n"
+    assert main(["verify-strip"]) == 0
 
 
 def test_strip_jsx_wrapper_retained_when_another_comment_is_kept(repo, capsys):
@@ -608,7 +608,7 @@ def test_strip_removes_final_comment_without_touching_preceding_line_ending(repo
     assert path.read_bytes() == b"const x = 1;\n"
 
 
-def test_strip_rejects_allowed_typescript_comment_even_with_forged_audit_row(repo, capsys):
+def test_strip_rejects_reference_directive_even_with_forged_audit_row(repo, capsys):
     text = '/// <reference types="node" />'
     path = repo.write("a.d.ts", text + "\n")
     repo.commit()
@@ -616,5 +616,14 @@ def test_strip_rejects_allowed_typescript_comment_even_with_forged_audit_row(rep
     assert Path("audit.txt").read_text() == ""
     Path("audit.txt").write_text(f"a.d.ts:1:1: NC001 comment not allowed: {text}\n")
     assert run() == 2
-    assert "allowed by default" in capsys.readouterr().err
+    assert "compiler directive /// <reference>" in capsys.readouterr().err
     assert path.read_text() == text + "\n"
+
+
+@pytest.mark.parametrize("space", ["\u00a0", " \u2003\t", "\ufeff\u00a0"])
+def test_strip_removes_only_newly_empty_unicode_whitespace_line(repo, capsys, space):
+    path = repo.write("a.ts", f"const a = 1;\n{space}// obsolete\n{space}\nconst b = 2;\n")
+    repo.commit()
+    prepare(capsys, f"a.ts:2:{len(space) + 1} | DELETE | redundant | - | -")
+    assert run() == 0, capsys.readouterr().err
+    assert path.read_text() == f"const a = 1;\n{space}\nconst b = 2;\n"
