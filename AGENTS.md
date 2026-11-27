@@ -1,6 +1,6 @@
 # AGENTS.md
 
-本仓库是 pre-commit hook `no-comments`，拦截新增的注释和 docstring。行为规格以 [README 的「规则」一节](README.md#规则) 为准，本文件只写实现和开发约定，不重复规格。
+本仓库是 `no-comments`：既提供拦截新增注释和 docstring 的 Git hook，也提供存量审查、改写和校验命令。语言范围、命令用法和已知局限以 [README](README.md) 为准。`CLAUDE.md` 是指向本文件的符号链接。
 
 ## 设计
 
@@ -43,20 +43,19 @@
   - 暂存区模式下如果正在 merge，取 `HEAD` 和 `MERGE_HEAD` 两边的并集，同一文本的次数取较大值，这样对方分支带来的注释不算新增。
 - 比较的依据是出现次数，范围是整个改动：把这次 diff 涉及的所有文件的旧版本合起来计数，新版本同样合起来计数。同一文本多出 k 次，就在新增行上按路径和位置顺序报告至多 k 条；同一文件（含改名）的 diff 替换块中按规范化文本逐一配对旧注释和新注释，不依赖块内行号相同；配对的注释视为保留。合起来算是为了让拆分、合并文件和 git 没识别出的改名不产生误报；用次数而不用集合，是为了新加一条和已有注释文本相同的注释时也能报出来。pre-commit 可能把文件分给多个进程，每个进程都按整个改动计算、只输出自己拿到的文件，所以结果和分组无关。
 - 比较前先规范化文本。注释取去掉开头所有 `#` 和空白后的内容，这样取消注释一段代码时其中原有的注释不算新增；docstring 用 `inspect.cleandoc` 规范缩进，挪进类里重新缩进不算新增。
-- 一条注释 token 按「前面有两个以上空白的 `#`」或「前后都是空白的 `#`」拆成几段，逐段放行、逐段比较，堵住 `# noqa  # 说明` 这种借工具指令夹带说明的写法。去掉 `#` 和空白后为空的段并入下一段，避免把 `#   # 注释` 拆出空注释。工具指令前缀只在段内没有其他前面带空白的 `#` 时放行。
+- Python 和 Shell 用 `comment_segments` 切分注释 token，再逐段放行和比较。去掉 `#` 和空白后为空的段并入下一段，避免把 `#   # 注释` 拆出空注释。
 - `ast.parse` 时屏蔽 `SyntaxWarning`，用户代码里的非法转义不会在 hook 输出里留下无文件名的警告。
 - 按语法识别注释，不用正则：Python 注释用 `tokenize`，单独成句的字符串用 `ast`，Shell、TypeScript 和 TSX 用 Tree-sitter。字符串、heredoc、模板和 JSX 文本里的注释符号不参与提取。TypeScript 的多行块注释按整个行号范围匹配新增行，输出保持每条违规一行。
-- `check` 和 `audit` 遇到无法解析的目标 TypeScript 或 TSX 文件时退出 2。TypeScript 兼容解析在任何嵌套层级查找 Tree-sitter 定位的模块修饰符和属性。先用 import 语法核验属性，再在用于解析的副本中掩去兼容内容，保留注释及其字节坐标；文件必须重新解析成功，且属性须属于模块声明。Python 解析失败给出警告并跳过。旧版本解析失败时按旧版本为空处理。`audit` 跳过符号链接，`strip` 拒绝经过符号链接的路径，并且在所有文件核对完成前不落盘。
-- hook 不做自动修复，也不支持配置文件；要排除路径，用 pre-commit 的 `exclude`。
+- TypeScript 兼容解析在任何嵌套层级查找 Tree-sitter 定位的模块修饰符和属性。先用 import 语法核验属性，再在用于解析的副本中掩去兼容内容，保留注释及其字节坐标；文件必须重新解析成功，且属性须属于模块声明。`check` 比较时将解析失败的旧版本视为空。
 
-### verify-strip
+### 清理校验
 
-`verify-strip` 和 `strip` 支持 Python、Shell、TypeScript 和 TSX。`verify-strip` 读取 base 版本（`git cat-file`）和工作区版本，两边做同样的去注释处理后比较，复用 hook 的解析方式，不另写一套：
+`verify-strip` 读取 base 版本（`git cat-file`）和工作区版本。`strip` 和 `verify-strip` 复用 hook 的解析方式比较代码，不另写一套：
 
 - Python：`ast.parse` 后去掉所有单独成句的字符串，以及 `pass` 和单独的 `...`，再比较 `ast.dump`。`ast` 本身不含注释；去掉 `pass` 和 `...` 是因为删掉唯一的 docstring 后要补一个占位语句。删掉的 docstring 按「所属的类或函数名」比对两边，列成提示。
 - Shell：用 `langs/shell.py` 定位注释，去掉注释和不影响语法的行尾空白及空行，保留被转义的空白和终止续行的空行，再逐行比较。
 - `strip` 和 `verify-strip` 在原始字节上比较生效的 shebang；Python 文件还用 `tokenize.detect_encoding` 检查生效的编码声明。
-- TypeScript 和 TSX：复用注释范围与兼容语法树，比较忽略注释后的节点结构和 token，保留模块修饰符、属性、字面量、JSX 文本子节点和会改变语法的换行；比较时把跨行块注释中的换行按真实换行解析，忽略无语义的可选尾逗号。编译指令单独比较；`verify-strip` 报告变化的指令名，`strip` 拒绝它们的 DELETE 或 KEEP。`strip` 只编辑注释跨度；遇到纯注释的 JSX 花括号，仅在内部注释全部删除时移除外层，随后用同一比较验证。
+- TypeScript 和 TSX：复用注释范围与兼容语法树，比较去掉注释后的节点结构和 token，保留模块修饰符、属性、字面量和 JSX 文本子节点。比较时把跨行块注释中的换行按真实换行解析，并规范化尾逗号。编译指令单独比较；`strip` 改写后用同一比较验证。
 - 文件一侧不存在时按空文件处理，所以新增或删除含代码的文件算代码改动。改名用 `--no-renames` 拆成删除和新增。
 
 ### clean-comments skill
@@ -115,5 +114,5 @@ uv run python scripts/replay.py --commits 200 --out /tmp/replay <本地仓库路
 
 1. 在这些公开仓库的完整克隆上回放，`mismatch`、`exit2`、`warning`、`slow` 都为 0，或者每一项都有对应 issue：AtticusZeller/sing-box-cli、psf/requests、pallets/click、fastapi/typer、nvm-sh/nvm、acmesh-official/acme.sh。维护者自己的私有仓库在本地回放，结果不进仓库。
 2. 改 `pyproject.toml` 里的 `version`，然后运行 `uv lock`。
-3. 改 README 里 `rev:` 和 `uv tool install ...@v` 中的版本号，以及 `skills/clean-comments/SKILL.md` 里 `uvx --from ...@v` 的版本号。`tests/test_docs.py` 和 `tests/test_skill.py` 检查这几处和 `version` 一致。
+3. 更新 README 的 pre-commit `rev`、Lefthook 和 Husky 的 `uvx` 命令、独立 CLI 示例，以及 `skills/clean-comments/SKILL.md` 的 `uvx` 命令。`tests/test_docs.py` 和 `tests/test_skill.py` 检查这些固定版本与 `version` 一致。
 4. 合并到 `main` 后，打标签并推送：`git tag -a vX.Y.Z -m vX.Y.Z && git push origin vX.Y.Z`。
