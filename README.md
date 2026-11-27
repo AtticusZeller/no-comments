@@ -6,7 +6,7 @@ Claude Code、Codex 等 agent 写的注释，多是变更叙事、对代码的�
 
 ## 快速开始
 
-在业务仓库的 `.pre-commit-config.yaml` 里加入：
+安装 [pre-commit](https://pre-commit.com/#install)，在业务仓库的 `.pre-commit-config.yaml` 里加入：
 
 ```yaml
 repos:
@@ -16,7 +16,7 @@ repos:
       - id: no-comments
 ```
 
-之后每次 `git commit` 都会检查暂存区里新增的内容。发现违规时，提交被拦下，每条违规输出一行 `path:line:col: NC001 comment not allowed: <前 60 个字符>`，最后附一段写给 agent 的修改提示。退出码：`0` 通过，`1` 有违规，`2` 无法完成检查（如参数错误、不在 git 仓库或无法解析 TypeScript）。
+运行 `pre-commit install` 后，每次 `git commit` 都会用 `no-comments check` 检查暂存区里新增的内容。发现违规时，提交被拦下，每条违规输出一行 `path:line:col: NC001 comment not allowed: <前 60 个字符>`，最后附一段写给 agent 的修改提示。`check` 的退出码：`0` 通过，`1` 有违规，`2` 无法完成检查（如参数错误、不在 git 仓库或无法解析 TypeScript）。
 
 ## 规则
 
@@ -39,7 +39,7 @@ repos:
 - 取消注释一段被注释掉的代码时，其中原有的注释；
 - 合并分支、解决冲突时，对方分支带进来的注释。
 
-一行末尾接连写的几段注释分开判断，比如 `x = f()  # noqa  # 说明`：`# noqa` 放行，`# 说明` 照常检查。分段的位置是前面有两个以上空白的 `#`，或者前后都是空白的 `#`。
+Python 和 Shell 的一行里接连写的几段注释分开判断，比如 `x = f()  # noqa  # 说明`：`# noqa` 放行，`# 说明` 照常检查。分段的位置是前面有两个以上空白的 `#`，或者前后都是空白的 `#`。
 
 ### 放行
 
@@ -75,9 +75,11 @@ TypeScript 和 TSX 中，`biome-ignore` 须写明一个或多个以空白分隔�
 
 只有代码、类型、测试都表达不了的外部约束，才用 `KEEP:`，比如硬件固件的 bug、第三方服务的调用限制：`# KEEP: 固件 bug，这里的延时不能去掉`。TypeScript 用 `// KEEP: ...` 或 `/* KEEP: ... */`。能用命名、类型或测试表达的内容，都不该写成 `KEEP:`。
 
-### 检查哪些文件
+### 支持范围
 
-扩展名为 `.py`、`.pyi` 的文件按 Python 检查，`.sh`、`.bash` 按 Shell 检查。`.ts`（包括 `.d.ts`）按 TypeScript 检查，`.tsx` 按 TSX 检查。其他文件看第一行的 shebang，解释器是 `python*` 时按 Python，是 `sh`、`bash`、`dash`、`ksh`、`ash` 时按 Shell。独立 JavaScript、HTML、CSS、YAML、TOML 和 Dockerfile 不检查。Python 解析失败或文件不是 UTF-8 编码时，会给出警告并跳过。TypeScript 或 TSX 文件无法解析时，`check` 和 `audit` 报错退出，不会静默跳过。
+`check`、`audit`、`strip` 和 `verify-strip` 支持 Python（`.py`、`.pyi`）、Shell（`.sh`、`.bash`）、TypeScript（`.ts`，含 `.d.ts`）和 TSX（`.tsx`）。其他扩展名或无扩展名的脚本可通过首行 shebang 识别：Python 解释器名是 `python` 或带数字版本后缀，Shell 是 `sh`、`bash`、`dash`、`ksh`、`ash`。经 pre-commit 接入时，传入的文件还受 hook 类型过滤。
+
+独立 JavaScript 和 JSONC（如含注释的 `tsconfig.json`）[不在支持范围内](https://github.com/AtticusZeller/no-comments/issues/36)，CSS、HTML、YAML、TOML 和 Dockerfile 也不支持。不递归解析字符串中的内嵌代码，例如 `bash -c '...'` 参数里的 Shell 注释。`verify-strip` 通过不代表这些文件没有改动。
 
 ## 纯前端仓库接入
 
@@ -123,17 +125,23 @@ pre-commit run no-comments --from-ref origin/main --to-ref HEAD
 
 ### 列出存量注释
 
-`audit` 列出指定路径下所有违规的注释和 docstring，不区分新旧，跳过符号链接及通过符号链接访问的文件。Python 文件的生效编码不是 UTF-8（可带 BOM）时，`audit` 警告并跳过，`strip` 和 `verify-strip` 报错退出：
+可以用固定版本的 `uvx` 临时运行，也可以安装 CLI（后续示例假定已安装）：
 
 ```sh
+uvx --from git+https://github.com/AtticusZeller/no-comments@v0.8.0 no-comments audit
 uv tool install git+https://github.com/AtticusZeller/no-comments@v0.8.0
-no-comments audit                      # 不给路径时检查 git ls-files 的全部文件
+```
+
+`audit` 列出指定路径下所有违规的注释和 docstring，不区分新旧，跳过符号链接及通过符号链接访问的文件。传入目录时只遍历 Git 跟踪的文件。即使列出违规，正常完成也返回 `0`；遇到错误返回 `2`。
+
+```sh
+no-comments audit                      # 不给路径时检查 git ls-files 中支持的文件
 no-comments audit --allow '^TODO\(' .  # 和 check 用同一套放行规则
 ```
 
 ### 清理存量注释
 
-`clean-comments`、`strip` 和 `verify-strip` 支持 Python、Shell、TypeScript 和 TSX。hook 只拦新增的注释，存量注释和 docstring 交给 `clean-comments` skill 清理：逐条核实，然后删除、改写成代码、保留为 `KEEP:`，或修掉注释所辩护的临时方案。两者的判断标准都是本文的「规则」一节。仓库还没接入 hook 时，skill 会在清理分支的第一个提交里加上。
+用 `clean-comments` skill 逐条核实存量注释和 docstring，再删除、改写成代码、保留为 `KEEP:`，或修掉注释所解释的临时方案。skill 按本文规则判断，沿用同一文件范围；尚未接入 hook 时，会先单独提交 hook 配置。
 
 ```sh
 npx skills add AtticusZeller/no-comments --skill clean-comments
@@ -154,7 +162,7 @@ no-comments strip /tmp/review.txt --audit /tmp/audit.txt
 
 写入前，命令检查所有条目的位置、类型和前 60 个字符是否与原 audit 一致、路径是否经过符号链接，以及改写是否改变生效的 shebang 或 Python 编码声明。核对失败时退出 `2`，不写入任何文件。写入阶段遇到错误也退出 `2`，但不会撤销此前的写入，会报告已经写入的路径。
 
-用 `verify-strip` 检查工作区是否只改了注释。它比较 `--base`（默认 `HEAD`）和工作区；不给文件时检查两者之间有改动的全部 Python、Shell、TypeScript 和 TSX 文件。TypeScript 和 TSX 对比去除普通注释后的语法结构、字面量和编译指令。可选尾逗号不影响结果；数组空槽等实际语法改动会被报告。编译指令的新增、删除和改动会列出指令名称。退出码 `0` 表示只有注释和 docstring 不同，`1` 表示有代码改动并列出文件，`2` 表示出错。删掉的 docstring 会单独列出，因为 typer、click、FastAPI 这类框架可能读取 `__doc__`。
+`verify-strip` 比较 `--base`（默认 `HEAD`）和工作区。不传文件时，检查 Git diff 列出的受支持文件，不含未跟踪文件。它比较去除普通注释后的代码；对 TypeScript 和 TSX，还会列出发生变化的编译指令。退出码 `0` 表示未检出代码改动，`1` 表示检出代码改动并列出文件，`2` 表示出错。删掉的 docstring 会单独列出，因为 typer、click、FastAPI 这类框架可能读取 `__doc__`。
 
 ```sh
 no-comments verify-strip --base HEAD
@@ -188,5 +196,7 @@ addopts = "--jaxtyping-packages=my_pkg,beartype.beartype"
 ## 已知局限
 
 - 同一次改动里删掉一条注释、同时在任一改动的文件里新加一条文本相同的注释，会被当成移动，不报告。
-- Shell 脚本按 bash 语法解析；shebang 是 `zsh` 的脚本不检查。
-- 文件用运行 hook 的 Python 版本解析，用了更新版本语法的文件会被跳过。
+- Shell 文件按 Bash 语法解析，不支持通过 `zsh` shebang 识别脚本。删除 CRLF 行尾的注释可能改变 Bash 收到的参数，而校验未必能发现；由不换行空格分隔的多段注释可能无法只删中段。见 [#30](https://github.com/AtticusZeller/no-comments/issues/30)。
+- `check` 和 `audit` 遇到非 UTF-8 文件或 Python 解析失败时警告并跳过；Python 语法受运行工具的 Python 版本限制。`strip` 和 `verify-strip` 遇到非 UTF-8 源码会报错。UTF-8 可以带字节顺序标记（BOM）。
+- `check` 和 `audit` 会对无法解析的目标 TypeScript 或 TSX 文件报错。模块属性里的 Unicode 换行、同文本注释的定位和换行后的重导出 `with` 仍有边界问题，见 [#32](https://github.com/AtticusZeller/no-comments/issues/32)。
+- TypeScript 和 TSX 的清理仍需跑项目自己的类型检查。`verify-strip` 可能漏报编译指令覆盖范围变化或非法尾逗号，也可能误识别 `@jsxRuntime` 或拒绝合法的自动分号插入写法。见 [#35](https://github.com/AtticusZeller/no-comments/issues/35)。

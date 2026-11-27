@@ -5,22 +5,22 @@ description: 清理存量代码注释和 docstring：逐条核实，然后删除
 
 # clean-comments
 
-no-comments hook 拦住新增的注释，这个 skill 清理已有的注释和 docstring。判断标准以 no-comments README 的「规则」一节为准，和 hook 共用 `KEEP:` 约定。
+no-comments hook 拦住新增的注释，这个 skill 清理已有的注释和 docstring。判断标准、[支持范围](https://github.com/AtticusZeller/no-comments#支持范围)和[已知局限](https://github.com/AtticusZeller/no-comments#已知局限)见 no-comments README。
 
 下文的 `references/`、`scripts/` 都相对本 skill 所在目录。
 
-下文所有 `no-comments` 都是指 `uvx --from git+https://github.com/AtticusZeller/no-comments@v0.8.0 no-comments`，版本号和 no-comments 仓库 `pyproject.toml` 的 `version` 一致，skill 和 CLI 随同一个 tag 发布。版本固定后 uvx 只在第一次运行时安装，之后走缓存。
+执行下文的 `no-comments` 命令时，用 `uvx --from git+https://github.com/AtticusZeller/no-comments@v0.8.0 no-comments` 替换命令名，无须单独安装 CLI。
 
 ## 0. 前置检查
 
 - `git status --porcelain` 必须为空。不干净就停下，告诉用户。
-- `uv` 和 `git` 都可用。然后运行 `no-comments --help`，确认输出里有 `strip` 和 `verify-strip`。失败就停下，告诉用户原因：缺 uv、没有网络，或者 tag 不存在。
+- 确认 `uvx`、`git` 和 `pre-commit` 可用。通过上面的固定版本运行 `no-comments --help`，确认有 `check`、`audit`、`strip` 和 `verify-strip`。启动失败或缺少子命令时停下并报告原因。
 - 从当前提交新开一个分支，比如 `git switch -c clean-comments/<范围>`。记下起点提交，第 7 步要用。
 - 业务仓库的 `.pre-commit-config.yaml` 里没有 no-comments hook 时，先加上，单独提交，比如 `chore: add no-comments pre-commit hook`。写法见 no-comments README 的「快速开始」，`rev` 用上面 uvx 命令里的版本号；仓库没有 `.pre-commit-config.yaml` 就新建一个只含这个 hook 的。这样清理之后新注释提交不进来，第 7 步也用它检查整个清理分支。
 - 仓库用 typer、click、argparse 等框架提供命令行时，导出全部命令和子命令的 `--help` 输出，存到仓库外的临时目录，第 4、5 步之后各对比一次。
 
 ## 1. 列清单
-本 skill 处理 Python、Shell、TypeScript（含 `.d.ts`）和 TSX。审查前先根据仓库的生成配置和 hook 排除规则筛出源码文件，显式传给 `audit`；它不会读取 hook 的 `exclude`。不要清理生成的 API 客户端、路由树、声明文件或第三方源码。
+本 skill 处理 Python、Shell、TypeScript（含手写的 `.d.ts`）和 TSX。审查前按 README 的支持范围、仓库的生成配置和 hook 排除规则筛出源码文件，显式传给 `audit`；它不会读取 hook 的 `exclude`。跳过生成文件和第三方源码。
 
 运行 `no-comments audit <范围>`，把原始输出保存到仓库外的临时文件 `audit.txt`。业务仓库 `.pre-commit-config.yaml` 里 no-comments hook 配了 `--allow` 的，带上同一组参数。
 
@@ -59,7 +59,7 @@ no-comments strip /临时目录/review.txt --audit /临时目录/audit.txt
 
 仓库配了 formatter 时，只对改动过且起点已格式化干净的文件跑；先用检查模式（比如 `ruff format --check`）在起点核实。然后做三项检查：
 
-1. `no-comments verify-strip --base HEAD` 必须以 0 退出。逐个检查列出的 docstring 是否被框架读取；需要保留的帮助文本在第二次提交里改用 `help=`、`description=`。第 0 步导出过 `--help` 的，重新导出并对比，只允许缺少由已删 docstring 提供的帮助文本。
+1. `no-comments verify-strip --base HEAD` 必须以 0 退出。若改动了 TypeScript 或 TSX，另跑项目自己的类型检查；若改动了 Shell 的 CRLF 行尾注释，验证受影响脚本的执行结果。逐个检查被删的 docstring 是否被框架读取；需要保留的帮助文本在第二次提交里改用 `help=`、`description=`。第 0 步导出过 `--help` 的，重新导出并对比，只允许缺少已删 docstring 提供的帮助文本。
 2. 对改动过的文件用相同的 `--allow` 重跑 audit。DELETE 和 KEEP 不应再出现；剩下的必须能对回 WORKAROUND 或 ENCODE 条目，核对时使用改写后的行列号。如果「待解决」项仍出现在复查结果中，列为阻塞项，报告后不提交。
 3. `git diff` 中每处改动都必须能对回审查表中的条目，包括 KEEP 的挪动和补上的 `...`。对不上的列进报告，不提交。
 
@@ -78,14 +78,14 @@ WORKAROUND 项按 `references/redesign.md` 处理：
 
 - 先写一个测试，把现有行为，或者 hack 所防止的那个问题，固定下来。测试名本身要说明它锁住了什么。
 - 满足「范围内修复」条件的：修根因，去掉 hack 和它的注释，跑全部测试，通过后提交。
-- 不满足的：不改代码，按模板写出草图，交给用户；`gh` 可用并且仓库在 GitHub 上时开 issue。然后删掉注释。
+- 不满足的：不改代码，按模板写出草图，交给用户；`gh` 可用并且仓库在 GitHub 上时开 issue。普通注释可以删；仍然生效的编译指令保留并记入待解决事项。
 - 用户在场时，范围内修复也要先给方案，批准后再动手。无人值守时只写测试和草图，不改代码。
 
 ## 7. 验证
 
 - 全部测试通过。
 - `pre-commit run no-comments --from-ref <起点> --to-ref HEAD` 通过，整个清理分支没有新增注释。
-- `no-comments audit <范围>`（带同一组 `--allow`）的结果只剩 KEEP 项。`KEEP:` 注释会被放行，不出现在输出里，所以输出应为空；再用 `rg -n 'KEEP:' <范围>` 核对剩下的 KEEP 和报告里的清单一致。
+- 用同一组 `--allow` 重跑 `no-comments audit <范围>`。命令须正常退出，若仍有违规，逐条核对并列入待解决事项。`KEEP:` 不出现在 audit 中，用 `rg -n 'KEEP:' <范围>` 核对保留项和报告里的清单是否一致。
 
 ## 8. 报告
 
